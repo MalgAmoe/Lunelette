@@ -3,10 +3,9 @@
 A learning-first Ministral 3 inference engine in C, with a path toward an
 optimized, portable runtime.
 
-**Status:** real-weight embedding and layer-0 pre-attention projections validated,
-not yet model inference. A bounded safetensors reader, BF16 embedding lookup,
-input RMSNorm and Q/K/V comparator are implemented; no tokenizer, attention,
-complete transformer block, or generation loop.
+**Status:** complete first transformer block validated against real-weight Python
+fixtures, from embedding lookup through attention and MLP residuals. This is
+not full model inference: no tokenizer, remaining layers or generation loop.
 
 ## Initial target
 
@@ -31,7 +30,7 @@ make sanitize
 Independently tested scalar CPU kernels include stable softmax, learned-weight
 RMSNorm with epsilon, row-major matrix-vector multiply (`y = W*x`, explicit rows
 and columns, no bias), and SiLU gated product (`SiLU(gate) * up`). These are
-primitives needed by a transformer, not a working transformer block or inference.
+primitives used by the first-block path described below, not full model inference.
 
 The new kernels use float32 products/accumulation and `sqrtf`/`expf`; softmax
 retains its original double-precision sum. RMSNorm sums squares before writing
@@ -207,8 +206,9 @@ deliberate mismatch and nonfinite rejection, but does not test its whole file
 pipeline synthetically. Real fixtures exercise that pipeline.
 
 This is a targeted diagnostic tool, not an execution framework: it recomputes
-embedding/norm per projection to bound storage. No attention, RoPE, residual,
-MLP, cache, generation, batching, quantization or GPU behavior is validated.
+embedding/norm per projection to bound storage. That comparator alone does not validate attention, RoPE, residuals or MLP;
+see the complete first-block comparison below. Cache, generation, batching,
+quantization and GPU behavior remain unimplemented.
 
 ## Next milestones
 
@@ -224,7 +224,140 @@ suitable pieces deliberately; do not inherit unrelated model or infrastructure
 scope. DwarfStar’s separation of tensor descriptors, data-base offsets, and
 lazy shard file access informed the design; no local upstream checkout is required.
 The broader database, hash maps and threading are unnecessary here. The parser
-and reader are original; no upstream code was reused or modified. Any future adapted
-code must retain its required attribution and license notices.
+and reader are original; no DwarfStar code was reused or modified. The YaRN
+formula adaptation from Transformers is attributed in NOTICE; adapted code
+must retain its required attribution and license notices.
 
 The project's own distribution license has not yet been selected.
+
+## Rotary embeddings and attention (scalar baseline)
+
+`include/attention.h` exposes two independent, caller-buffer APIs:
+
+- `lunelette_ministral3_yarn`: in-place Q `[T,32,128]`, K `[T,8,128]`,
+  split-half rotation, absolute positions in `[0,262144)`. Fixed to
+  Ministral-3-3B-Instruct-2512 checkpoint revision
+  `b6d637bef2393152b3da2b2fde72eecdee30557e`: theta=1e6, factor=16,
+  original context=16384, beta_fast/slow=32/1, default truncated correction
+  range. mscale=mscale_all_dim=1 makes the cos/sin amplitude ratio **1**.
+  Only Q receives `1 + 0.1*log(1 + floor(position/16384))` afterward.
+  This intentionally is not a generic model configuration API.
+- `lunelette_causal_gqa`: token-major FP32 Q/K/V, row-order causal prefill,
+  query head `h` maps to KV head `h/4` for 32/8 heads. Generic positive head
+  dimensions and divisible head counts are supported for synthetic tests.
+  The output is `[T,32,128]` (flattenable to `[T,4096]`), **before o_proj**.
+  Caller supplies `T` float scratch elements. No weights, cache or allocation.
+
+Contracts, overflow checks and failure behavior are documented in the header.
+The scalar implementation uses float dot products and max-subtracted float
+softmax. It is quadratic in sequence length; it is a correctness baseline,
+not an optimized long-context implementation. No padding, batching, dropout,
+KV cache is provided by these attention APIs; output projection and feedforward
+are composed separately in the first-block API below.
+See NOTICE for upstream formula attribution and license.
+
+`make test` includes basis rotations, golden official FP32 YaRN samples at
+positions 0/1/16383/16384/16385, causal masking, GQA mapping, nonuniform
+probabilities, stable large-score softmax, invalid arguments and size overflow.
+The small golden constants are self-contained; no Python/model is required.
+
+Optional isolated reference comparison (fixtures supplied separately):
+
+```sh
+make build/compare_attention
+build/compare_attention fixtures/attention/short.safetensors
+build/compare_attention fixtures/attention/multilingual.safetensors
+build/compare_attention fixtures/attention/boundary.safetensors
+```
+
+Fixture schema: I64 `positions[T]`; F32 `q`, `rotated_q`, `attention`
+`[1,T,4096]`; F32 `k`, `v`, `rotated_k` `[1,T,1024]`, with `1<=T<=256`.
+`rotated_q` includes query scaling. `attention` is official eager causal
+attention before o_proj. Export from official `Ministral3RotaryEmbedding`,
+`apply_rotary_pos_emb`, query scaling and `eager_attention_forward`, using
+CPU FP32 actual layer-0 QKV captured before rotary. Keep model revision,
+source revision, environment, input IDs/tokenizer settings, fixture hashes and
+capture points alongside fixtures. A synthetic small-position-list fixture
+can test context boundaries without allocating a 16K-token sequence.
+
+Comparison reports max absolute and relative errors, rejecting nonfinite data
+and any element outside `atol=2e-4, rtol=1e-4` (scalar versus parallel FP32
+reductions; absolute allowance covers cancellation). Near-zero relative errors
+alone can be large. The comparator tests known matches, mismatches and NaNs.
+This isolates the new kernels from projection errors; it is not an end-to-end
+C model or full long-context validation.
+
+
+## Complete first transformer block
+
+`include/block.h` / `src/block.c` expose `lunelette_first_block`: actual embedding
+rows -> input RMSNorm -> QKV -> YaRN -> causal GQA -> output projection ->
+residual -> post-attention RMSNorm -> SiLU(gate projection) * up projection ->
+down projection -> residual. Returns token-major FP32 `[N,3072]`, corresponding
+to official `hidden_states[1]` (before layer 1, not final model normalization).
+The [official decoder and MLP forward](https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/ministral3/modeling_ministral3.py)
+confirm the two pre-norm residual branches and bias-free gated MLP.
+
+This deliberately fixes the checkpoint's 3B architecture: hidden 3072,
+intermediate 9216, 32 query / 8 KV heads, head dimension 128, RMS epsilon 1e-5,
+vocabulary 131072. It does not parse model configuration or the shard index.
+The inspected checkpoint index places embeddings and **all layer-0 weights in
+shard 00001**. Every required tensor's BF16 dtype, rank and exact shape are
+checked before use. One row-major matrix is expanded at a time (maximum
+108 MiB); embedding rows only are read. Token-major activation storage is
+bounded to 256 tokens (about 37 MiB maximum). No entire model allocation,
+retained weight cache, framework, dependencies or Python runtime is needed.
+Weights are reread on each call: clarity and bounded memory, not speed.
+
+The borrowed shard remains open and unchanged; the function owns and frees its
+workspace. Caller owns IDs and output; output is unchanged on failure. See the
+header for lifetimes and concurrency restrictions. Finite checkpoint values
+are assumed, consistent with the underlying scalar kernels; arbitrary corrupt
+nonfinite weights are not exhaustively scanned. Positions are consecutive from
+zero, one sequence, no padding/cache. This stops at the first block only.
+
+```sh
+make build/compare_block
+./build/compare_block WEIGHT_SHARD FIXTURE.safetensors [MORE_FIXTURES...]
+# Five named fixtures, explicit caller-supplied paths:
+make block-integration WEIGHTS=/path/to/shard.safetensors FIXTURES=/path/to/fixtures
+# Also supported after the corresponding test builds:
+make BUILD=build/sanitize block-integration WEIGHTS=/path/to/shard.safetensors FIXTURES=/path/to/fixtures
+make BUILD=build/ndebug block-integration WEIGHTS=/path/to/shard.safetensors FIXTURES=/path/to/fixtures
+```
+
+Fixture schema: I64 `input_ids[1,N]`, F32 `hidden_1[1,N,3072]`, 1<=N<=256.
+The independent existing fixtures came from full official Transformers eager
+CPU FP32 forward with `use_cache=False`, `output_hidden_states=True`, model
+revision `b6d637bef2393152b3da2b2fde72eecdee30557e`, Python 3.12.11,
+PyTorch 2.15.0, Transformers 5.0.0, safetensors 0.8.0, four CPU threads.
+Raw prompts use tokenizer `encode(add_special_tokens=True)`; chat and longer
+use the checkpoint chat template with a generation prompt and system message
+“Be concise.” Exact token IDs are stored in each fixture. No C-derived outputs
+were used to generate the reference.
+
+All five pass normal, ASan/UBSan and NDEBUG builds (Apple clang 17):
+
+| Fixture | Tokens | Normal/NDEBUG max absolute | Normal/NDEBUG max relative |
+|---|---:|---:|---:|
+| short | 6 | 1.216e-5 | 0.05129 |
+| multilingual | 24 | 1.216e-5 | 0.33297 |
+| code | 22 | 1.216e-5 | 0.50538 |
+| chat | 24 | 1.216e-5 | 0.09705 |
+| longer | 150 | 1.216e-5 | 38.30 |
+
+Sanitizer maximum absolute error is 1.193e-5 across all five; maximum relative
+is 39.60 (near-zero reference). Acceptance is elementwise `abs_error <= 2e-4 +
+1e-4*abs(reference)`, unchanged from existing projection/attention comparisons,
+chosen for sequential versus parallel FP32 reductions. Large relative errors
+near zero do not determine acceptance alone. No tolerance relaxation or extra
+intermediate captures were needed.
+
+Default `make test` tests the comparator's exact match, deliberate mismatch and
+nonfinite rejection, plus API null/count/token validation, missing weights,
+wrong embedding dtype/shape and unchanged output on rejection. Existing kernel
+tests cover the component math. There is intentionally no miniature configurable
+block or synthetic full fixed-3B weight payload: the default suite does **not**
+prove full-block numerical composition; the optional five independent real-weight
+comparisons provide that evidence. No full model, cache or long-context
+correctness claim follows from this first-block result.

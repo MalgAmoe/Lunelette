@@ -1,0 +1,7 @@
+YaRN formulas in src/attention.c are adapted from Hugging Face Transformers
+v5.0.0 (08810b1e278938278c50153ee1edfd7a20a759da), modeling_rope_utils.py.
+Copyright 2024 The HuggingFace Team. All rights reserved.
+Apache License 2.0 (LICENSES/Apache-2.0.txt).
+Reference rotation, GQA and query scaling:
+https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/ministral3/modeling_ministral3.py
+https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/modeling_rope_utils.py
