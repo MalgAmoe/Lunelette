@@ -37,8 +37,6 @@ unit tests—not evidence of model correctness.
 - `src/`: CLI and portable numerical code
 - `tests/`: small deterministic C tests
 - `tools/reference/`: reference-validation plan; Python harness not yet implemented
-- `../ds4/`: existing sibling DwarfStar checkout, left unchanged and outside
-  the Lunelette project
 
 ## Safetensors / embedding API
 
@@ -82,14 +80,21 @@ The optional comparator consumes the saved Python `input_ids` (I64 `[1,N]`)
 and compares every embedding bit against `hidden_0` (F32 `[1,N,D]`), including
 signed zero. It neither tokenizes nor runs Python or the transformer.
 
+The examples below assume you supply the checkpoint under `models/` and the
+five reference fixtures under `fixtures/reference/`, both inside this repository
+and ignored by Git. These optional resources are not bundled or downloaded
+automatically. The fixture files are named `short.safetensors`,
+`multilingual.safetensors`, `code.safetensors`, `chat.safetensors`, and
+`longer.safetensors`. Default synthetic tests need none of them.
+
 ```sh
 make integration \
-  WEIGHTS=../models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
-  FIXTURES=../experiments/reference/fixtures
+  WEIGHTS=models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
+  FIXTURES=fixtures/reference
 # Same five comparisons with ASan/UBSan (after make sanitize):
 make BUILD=build/sanitize integration \
-  WEIGHTS=../models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
-  FIXTURES=../experiments/reference/fixtures
+  WEIGHTS=models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
+  FIXTURES=fixtures/reference
 # Or choose explicit individual fixtures:
 ./build/compare_embeddings WEIGHT_SHARD FIXTURE.safetensors [MORE_FIXTURES...]
 ```
@@ -128,9 +133,8 @@ decoding separately; matching generated text alone is not a correctness test.
 Lunelette is inspired by antirez's [DwarfStar](https://github.com/antirez/ds4):
 a focused native engine rather than a universal model framework. Study and reuse
 suitable pieces deliberately; do not inherit unrelated model or infrastructure
-scope. Inspected only the safetensors database/loading slice in
-`../ds4/gguf-tools/deepseek4-quantize.c` (roughly lines 515–665). Its separation
-of tensor descriptors, data-base offsets, and lazy shard file access is useful.
+scope. DwarfStar’s separation of tensor descriptors, data-base offsets, and
+lazy shard file access informed the design; no local upstream checkout is required.
 The broader database, hash maps and threading are unnecessary here. The parser
 and reader are original; no upstream code was reused or modified. Any future adapted
 code must retain its required attribution and license notices.
