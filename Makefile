@@ -16,12 +16,16 @@ $(BUILD)/lunelette: src/main.c include/lunelette.h | $(BUILD)
 $(BUILD)/test_math: tests/test_math.c src/math.c include/lunelette.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_math.c src/math.c -o $@ $(LDLIBS)
 
-test: all $(BUILD)/test_math $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
+$(BUILD)/test_kernels: tests/test_kernels.c src/math.c include/lunelette.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_kernels.c src/math.c -o $@ $(LDLIBS)
+
+test: all $(BUILD)/test_math $(BUILD)/test_kernels $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
 	./$(BUILD)/test_safetensors $(BUILD)/test-safetensors.tmp $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors $(BUILD)/synthetic-mismatch.safetensors
 	./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors
 	@if ./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-mismatch.safetensors >$(BUILD)/mismatch.log 2>&1; then cat $(BUILD)/mismatch.log; exit 1; fi
 	grep 'mismatch token position 0 column 0: expected 3f800001, got 3f800000' $(BUILD)/mismatch.log
 	./$(BUILD)/test_math
+	./$(BUILD)/test_kernels
 	./$(BUILD)/lunelette --version
 	./$(BUILD)/lunelette --help
 	@if ./$(BUILD)/lunelette --invalid >/dev/null 2>&1; then exit 1; fi

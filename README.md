@@ -27,9 +27,31 @@ make test
 make sanitize
 ```
 
-The first numerical primitive is a stable float32 softmax, with tests for known
-outputs, in-place execution, large offsets, and invalid input. These are basic
-unit tests—not evidence of model correctness.
+Independently tested scalar CPU kernels include stable softmax, learned-weight
+RMSNorm with epsilon, row-major matrix-vector multiply (`y = W*x`, explicit rows
+and columns, no bias), and SiLU gated product (`SiLU(gate) * up`). These are
+primitives needed by a transformer, not a working transformer block or inference.
+
+The new kernels use float32 products/accumulation and `sqrtf`/`expf`; softmax
+retains its original double-precision sum. RMSNorm sums squares before writing
+output; it supports exact in-place input or weight output. Gated product supports
+exact in-place output on either input. Partial output/input overlap is forbidden;
+matrix-vector output must be disjoint from its inputs. See `include/lunelette.h`
+for buffer lengths, ownership, overlap and error contracts.
+
+Null pointers, zero dimensions, byte-size overflow, and non-positive/non-finite
+RMSNorm epsilon are rejected before writing output. Array elements are not
+scanned for finiteness; arithmetic overflow and non-finite results are not errors.
+Sign-split SiLU avoids exponential overflow for finite gates, but does not prevent
+final-product overflow. Sequential float reductions need not match PyTorch's
+reduction order bit-for-bit; RMSNorm is not an overflow-resistant norm.
+
+Always-active synthetic tests cover hand-calculated values, weighted/zero-vector
+RMSNorm, epsilon, non-square matrices in both directions, finite SiLU extremes,
+in-place cases and invalid arguments. Arithmetic checks use combined absolute
+(1e-6) and relative (2e-6) tolerances for these small examples, with error reports
+on failure. No PyTorch activation comparison has yet been performed for these
+kernels. These unit tests are not evidence of model correctness.
 
 ## Layout
 
