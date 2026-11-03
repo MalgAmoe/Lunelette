@@ -14,4 +14,12 @@ int lunelette_embed(st_file **files, size_t nfiles, const int64_t *ids, size_t c
 int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
                      const float *input, size_t count, float *output,
                      char *error, size_t capacity);
+int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
+    const float *input, size_t count, float *output, char *error, size_t capacity,
+    float *key, float *value, size_t offset);
+/* Internal offset attention: scratch holds offset+tokens floats. Same math as
+ * baseline; queries start at absolute offset, keys/values start at zero. */
+int lunelette_offset_gqa(const float *query, const float *key, const float *value,
+    float *output, float *scratch, size_t tokens, size_t query_heads,
+    size_t kv_heads, size_t head_dim, size_t offset);
 #endif

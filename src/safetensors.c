@@ -479,8 +479,9 @@ int st_load_bf16(st_file *s, const st_tensor *t, float *out, size_t count)
         st_read(s, t, 0, NULL, 0)) {
         return -1;
     }
-    /* Fixed scratch space; only the caller-selected tensor is read. */
-    unsigned char bytes[4096];
+    /* Bounded 64 KiB scratch amortizes seeks for large projection tensors.
+     * Conversion order is unchanged; no weights are retained between calls. */
+    unsigned char bytes[65536];
     for (size_t offset = 0; offset < count;) {
         size_t chunk = count - offset;
         if (chunk > sizeof bytes / 2) {

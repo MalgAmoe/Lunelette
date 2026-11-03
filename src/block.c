@@ -89,9 +89,9 @@ static int project(st_file **files, size_t nfiles, const char *name, size_t rows
     return 0;
 }
 
-int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
+int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
                      const float *input, size_t count, float *output,
-                     char *error, size_t capacity)
+                     char *error, size_t capacity, float *cached_key, float *cached_value, size_t offset)
 {
     int result = -1;
     float *workspace = NULL, *matrix = NULL;
@@ -101,7 +101,9 @@ int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
         "self_attn.v_proj.weight", "self_attn.o_proj.weight", "post_attention_layernorm.weight",
         "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"
     };
-    if (!input || !output || !count || count > 256 || layer >= 26) {
+    if (!input || !output || !count || count > 256 || layer >= 26 ||
+        offset > 256 - count || (!!cached_key != !!cached_value) ||
+        (offset && !cached_key)) {
         return -1;
     }
     for (size_t i = 0; i < 9; i++) {
@@ -143,7 +145,7 @@ int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
     }
     memcpy(hidden, input, count * HIDDEN * sizeof(float));
     for (size_t t = 0; t < count; t++) {
-        positions[t] = (uint32_t)t;
+        positions[t] = (uint32_t)(offset + t);
         lunelette_hidden_norm(hidden + t * HIDDEN, norm_weight, normalized + t * HIDDEN);
     }
     if (project(files, nfiles, names[1], QUERY, HIDDEN,
@@ -154,8 +156,16 @@ int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
                 normalized, v, count, matrix, error, capacity)) {
         goto done;
     }
-    if (lunelette_ministral3_yarn(q, k, positions, count) ||
-        lunelette_causal_gqa(q, k, v, attention, scratch, count, 32, 8, 128)) {
+    if (lunelette_ministral3_yarn(q, k, positions, count)) {
+        goto done;
+    }
+    if (cached_key) {
+        memcpy(cached_key + offset * KV, k, count * KV * sizeof(float));
+        memcpy(cached_value + offset * KV, v, count * KV * sizeof(float));
+    }
+    if (lunelette_offset_gqa(q, cached_key ? cached_key : k,
+                            cached_value ? cached_value : v, attention, scratch,
+                            count, 32, 8, 128, offset)) {
         if (error && capacity) {
             snprintf(error, capacity, "layer %zu: YaRN/causal GQA failed", layer);
         }
@@ -259,4 +269,12 @@ int lunelette_embed(st_file **files, size_t nfiles, const int64_t *ids, size_t c
         }
     }
     return 0;
+}
+
+int lunelette_layer(st_file **files, size_t nfiles, size_t layer,
+                     const float *input, size_t count, float *output,
+                     char *error, size_t capacity)
+{
+    return lunelette_layer_cached(files, nfiles, layer, input, count, output,
+                                   error, capacity, NULL, NULL, 0);
 }

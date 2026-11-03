@@ -5,3 +5,8 @@ Apache License 2.0 (LICENSES/Apache-2.0.txt).
 Reference rotation, GQA and query scaling:
 https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/ministral3/modeling_ministral3.py
 https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/modeling_rope_utils.py
+
+Unicode property tables in src/tokenizer_unicode.h were generated from regex
+2026.9.29 (Unicode 18.0.0). Source-package notices are retained in
+src/tokenizer_unicode_LICENSE.txt; generator and provenance are documented in
+tests/tokenizer_generate_unicode.py and tests/tokenizer_notes.md.

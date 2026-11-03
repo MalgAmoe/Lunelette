@@ -4,6 +4,7 @@
  * Split-half rotation and query scaling follow modeling_ministral3.py.
  */
 #include "attention.h"
+#include "forward_internal.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -61,13 +62,14 @@ int lunelette_ministral3_yarn(float *query, float *key, const uint32_t *position
     return 0;
 }
 
-int lunelette_causal_gqa(const float *query, const float *key, const float *value,
+int lunelette_offset_gqa(const float *query, const float *key, const float *value,
                          float *output, float *scratch, size_t tokens,
-                         size_t query_heads, size_t kv_heads, size_t head_dim)
+                         size_t query_heads, size_t kv_heads, size_t head_dim, size_t offset)
 {
     if (!query || !key || !value || !output || !scratch ||
         !valid_shape(tokens, query_heads, head_dim) ||
-        !valid_shape(tokens, kv_heads, head_dim) || query_heads % kv_heads) {
+        offset > SIZE_MAX - tokens ||
+        !valid_shape(tokens + offset, kv_heads, head_dim) || query_heads % kv_heads) {
         return -1;
     }
     size_t group = query_heads / kv_heads;
@@ -76,7 +78,7 @@ int lunelette_causal_gqa(const float *query, const float *key, const float *valu
         for (size_t h = 0; h < query_heads; h++) {
             const float *q = query + (t * query_heads + h) * head_dim;
             float maximum = -INFINITY;
-            for (size_t s = 0; s <= t; s++) {
+            for (size_t s = 0; s <= t + offset; s++) {
                 const float *k = key + (s * kv_heads + h / group) * head_dim;
                 float score = 0;
                 for (size_t d = 0; d < head_dim; d++) {
@@ -90,16 +92,16 @@ int lunelette_causal_gqa(const float *query, const float *key, const float *valu
                 maximum = fmaxf(maximum, score);
             }
             float sum = 0;
-            for (size_t s = 0; s <= t; s++) {
+            for (size_t s = 0; s <= t + offset; s++) {
                 scratch[s] = expf(scratch[s] - maximum);
                 sum += scratch[s];
             }
-            for (size_t s = 0; s <= t; s++) {
+            for (size_t s = 0; s <= t + offset; s++) {
                 scratch[s] /= sum;
             }
             for (size_t d = 0; d < head_dim; d++) {
                 float result = 0;
-                for (size_t s = 0; s <= t; s++) {
+                for (size_t s = 0; s <= t + offset; s++) {
                     result += scratch[s] * value[(s * kv_heads + h / group) * head_dim + d];
                 }
                 output[(t * query_heads + h) * head_dim + d] = result;
@@ -107,4 +109,12 @@ int lunelette_causal_gqa(const float *query, const float *key, const float *valu
         }
     }
     return 0;
+}
+
+int lunelette_causal_gqa(const float *query, const float *key, const float *value,
+                         float *output, float *scratch, size_t tokens,
+                         size_t query_heads, size_t kv_heads, size_t head_dim)
+{
+    return lunelette_offset_gqa(query, key, value, output, scratch, tokens,
+                                query_heads, kv_heads, head_dim, 0);
 }

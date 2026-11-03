@@ -10,16 +10,13 @@ all: $(BUILD)/lunelette
 $(BUILD):
 	mkdir -p $@
 
-$(BUILD)/lunelette: src/main.c include/lunelette.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) src/main.c -o $@ $(LDLIBS)
-
 $(BUILD)/test_math: tests/test_math.c src/math.c include/lunelette.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_math.c src/math.c -o $@ $(LDLIBS)
 
 $(BUILD)/test_kernels: tests/test_kernels.c src/math.c include/lunelette.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_kernels.c src/math.c -o $@ $(LDLIBS)
 
-test: $(BUILD)/test_forward $(BUILD)/compare_forward $(BUILD)/compare_block $(BUILD)/test_attention $(BUILD)/compare_attention $(BUILD)/compare_projections all $(BUILD)/test_math $(BUILD)/test_kernels $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
+test: $(BUILD)/compare_generation $(BUILD)/test_generation $(BUILD)/test_forward $(BUILD)/compare_forward $(BUILD)/compare_block $(BUILD)/test_attention $(BUILD)/compare_attention $(BUILD)/compare_projections all $(BUILD)/test_math $(BUILD)/test_kernels $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
 	./$(BUILD)/test_safetensors $(BUILD)/test-safetensors.tmp $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors $(BUILD)/synthetic-mismatch.safetensors
 	./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors
 	@if ./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-mismatch.safetensors >$(BUILD)/mismatch.log 2>&1; then cat $(BUILD)/mismatch.log; exit 1; fi
@@ -30,6 +27,13 @@ test: $(BUILD)/test_forward $(BUILD)/compare_forward $(BUILD)/compare_block $(BU
 	./$(BUILD)/compare_block --self-test
 	./$(BUILD)/compare_forward --self-test
 	./$(BUILD)/test_forward
+	cd $(BUILD) && ./test_tokenizer
+	cd $(BUILD) && ./test_chat
+	cd $(BUILD) && sh $(abspath tests/test_cli.sh) ./lunelette
+	./$(BUILD)/test_generation
+	./$(BUILD)/test_cache
+	./$(BUILD)/compare_cache --self-test
+	./$(BUILD)/compare_generation --self-test
 	./$(BUILD)/test_math
 	./$(BUILD)/test_kernels
 	./$(BUILD)/lunelette --version
@@ -80,3 +84,37 @@ forward-integration: $(BUILD)/compare_forward
 
 $(BUILD)/test_forward: tests/test_forward.c src/forward.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_forward.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
+
+GENERATION_SOURCES = src/cache.c src/generation.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c
+GENERATION_HEADERS = include/cache.h include/generation.h include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h src/forward_internal.h
+
+$(BUILD)/test_generation: tests/test_generation.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_generation.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+
+$(BUILD)/compare_generation: tests/compare_generation.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_generation.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+
+$(BUILD)/test_cache: tests/test_cache.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/cache.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_cache.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+
+
+$(BUILD)/compare_cache: tests/compare_cache.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/cache.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_cache.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+
+test: $(BUILD)/test_cache $(BUILD)/compare_cache
+
+TOKENIZER_SOURCES = src/tokenizer.c src/tokenizer_json.c
+TOKENIZER_HEADERS = include/tokenizer.h src/tokenizer_json.h src/tokenizer_unicode.h
+CLI_SOURCES = src/main.c src/chat.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES)
+CLI_HEADERS = include/chat.h $(TOKENIZER_HEADERS) $(GENERATION_HEADERS)
+
+$(BUILD)/test_tokenizer: tests/test_tokenizer.c $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_tokenizer.c $(TOKENIZER_SOURCES) -o $@ $(LDLIBS)
+
+$(BUILD)/test_chat: tests/test_chat.c src/chat.c include/chat.h $(TOKENIZER_HEADERS) $(GENERATION_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_chat.c src/chat.c -o $@ $(LDLIBS)
+
+test: $(BUILD)/test_tokenizer $(BUILD)/test_chat
+
+$(BUILD)/lunelette: $(CLI_SOURCES) $(CLI_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(CLI_SOURCES) -o $@ $(LDLIBS)

@@ -113,6 +113,51 @@ static void comparator_fixture(const char *destination, int kind)
     path = saved;
 }
 
+/* Exercise exact/full/partial chunks independently of model-sized tensors.
+ * A synthetic handle with short backing storage models a read-time truncation. */
+static void loader_chunk_tests(void)
+{
+    const size_t counts[] = {32767, 32768, 32769, 65537};
+    for (size_t c = 0; c < sizeof counts / sizeof counts[0]; c++) {
+        size_t count = counts[c];
+        for (size_t missing = 0; missing <= 1; missing++) {
+            st_tensor tensor = {0};
+            tensor.dtype = ST_BF16;
+            tensor.rank = 1;
+            tensor.shape[0] = count;
+            tensor.end = count * 2;
+            st_file handle = {0};
+            handle.file = tmpfile();
+            handle.count = 1;
+            handle.tensors = &tensor;
+            CHECK(handle.file);
+            for (size_t i = 0; i < count * 2 - missing; i++) {
+                uint16_t bits = (uint16_t)((i / 2) * 37u);
+                CHECK(fputc((i % 2 ? bits >> 8 : bits & 255), handle.file) != EOF);
+            }
+            CHECK(!fflush(handle.file));
+            float *output = malloc((count + 1) * sizeof *output);
+            CHECK(output);
+            output[count] = 123.0f;
+            int rc = st_load_bf16(&handle, &tensor, output, count);
+            CHECK(rc == (missing ? -1 : 0));
+            CHECK(output[count] == 123.0f);
+            if (!missing) {
+                for (size_t i = 0; i < count; i++) {
+                    uint32_t actual;
+                    memcpy(&actual, output + i, sizeof actual);
+                    CHECK(actual == (uint32_t)(uint16_t)(i * 37u) << 16);
+                }
+            }
+            output[0] = 123.0f;
+            CHECK(st_load_bf16(&handle, &tensor, output, count - 1) == -1);
+            CHECK(output[0] == 123.0f);
+            free(output);
+            CHECK(!fclose(handle.file));
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     CHECK(argc == 5); path = argv[1];
     const char *valid = "{\"w\":{\"dtype\":\"BF16\",\"shape\":[2,2],\"data_offsets\":[0,8]},\"f\":{\"dtype\":\"F32\",\"shape\":[],\"data_offsets\":[8,12]},\"i\":{\"dtype\":\"I64\",\"shape\":[1],\"data_offsets\":[12,20]}}";
@@ -193,28 +238,29 @@ int main(int argc, char **argv) {
         else bad(header, 4);
     }
     /* Cross the loader's fixed scratch boundary, plus empty/scalar tensors. */
-    file("{\"large\":{\"dtype\":\"BF16\",\"shape\":[2050],\"data_offsets\":[0,4100]},"
-         "\"empty\":{\"dtype\":\"BF16\",\"shape\":[0],\"data_offsets\":[4100,4100]},"
-         "\"scalar\":{\"dtype\":\"BF16\",\"shape\":[],\"data_offsets\":[4100,4102]}}", 4102);
+    file("{\"large\":{\"dtype\":\"BF16\",\"shape\":[32770],\"data_offsets\":[0,65540]},"
+         "\"empty\":{\"dtype\":\"BF16\",\"shape\":[0],\"data_offsets\":[65540,65540]},"
+         "\"scalar\":{\"dtype\":\"BF16\",\"shape\":[],\"data_offsets\":[65540,65542]}}", 65542);
     f = fopen(path, "r+b");
     CHECK(f);
     CHECK(!fseek(f, -6, SEEK_END));
-    /* End includes the scalar: mark elements 2048/2049 across the chunk split. */
+    /* End includes the scalar: mark elements 32768/32769 across the chunk split. */
     const unsigned char boundary_values[] = {0x80, 0x3f, 0, 0xc0, 0, 0};
     CHECK(fwrite(boundary_values, 1, sizeof boundary_values, f) == sizeof boundary_values);
     CHECK(!fclose(f));
     CHECK(!st_open(&s, path, error, sizeof error));
-    float *large = malloc(2050 * sizeof *large);
+    float *large = malloc(32770 * sizeof *large);
     CHECK(large);
-    CHECK(!st_load_bf16(&s, st_find(&s, "large"), large, 2050));
-    for (size_t i = 0; i < 2050; i++) {
-        CHECK(large[i] == (i == 2048 ? 1.0f : i == 2049 ? -2.0f : 0.0f));
+    CHECK(!st_load_bf16(&s, st_find(&s, "large"), large, 32770));
+    for (size_t i = 0; i < 32770; i++) {
+        CHECK(large[i] == (i == 32768 ? 1.0f : i == 32769 ? -2.0f : 0.0f));
     }
     CHECK(!st_load_bf16(&s, st_find(&s, "empty"), large, 0));
     CHECK(!st_load_bf16(&s, st_find(&s, "scalar"), large, 1));
     free(large);
     st_close(&s);
     capacity_tests();
+    loader_chunk_tests();
     /* Every truncated prefix/header/data position must fail. */
     for (size_t n = 0; n < 8 + strlen(valid) + 20; n++) {
         f = fopen(path, "wb"); CHECK(f);

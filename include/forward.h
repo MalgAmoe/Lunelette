@@ -16,7 +16,7 @@
  * Outputs unchanged on any failure. Returns 0 or -1, diagnostic when supplied.
  * Workspace is internally allocated/freed; no retained state. Handles cannot
  * be used concurrently. No config inference, cache, batching, padding, tokenizer,
- * generation, vision, quantization, 8B/14B or accelerated backend support.
+ * vision, quantization, 8B/14B or accelerated backend support.
  */
 int lunelette_forward(st_file *shard1, st_file *shard2, const int64_t *ids, size_t count,
                        float *hidden, float *logits, float *hidden_13,
