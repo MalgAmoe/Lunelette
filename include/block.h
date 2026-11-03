@@ -4,6 +4,7 @@
 #include "safetensors.h"
 
 /* Fixed Ministral-3-3B layer 0, CPU FP32, single sequence, no cache/padding.
+ * RMSNorm uses FP32 squares and a double sum (FP32 mean/scale/output).
  * Reads selected BF16 weights from one already-open shard (borrowed, unchanged).
  * IDs[count] must be in [0,131072), count in [1,256]; positions are 0..count-1.
  * Caller owns output[count][3072], disjoint from IDs and shard descriptors.

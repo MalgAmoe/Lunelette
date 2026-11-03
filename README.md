@@ -3,9 +3,12 @@
 A learning-first Ministral 3 inference engine in C, with a path toward an
 optimized, portable runtime.
 
-**Status:** complete first transformer block validated against real-weight Python
-fixtures, from embedding lookup through attention and MLP residuals. This is
-not full model inference: no tokenizer, remaining layers or generation loop.
+**Status: experimental, validation incomplete.** Uncached fixed-layout 3B text forward through all 26 layers, final
+normalization and tied last-token vocabulary logits. Library/comparator API only;
+no tokenizer or generation loop. The original first-block API is preserved.
+Last logits pass all five original and three held-out fixtures. Full-depth hidden
+states pass a separately calibrated provisional criterion; longer still fails the
+strict elementwise diagnostic. See [the bounded contract](docs/full-depth-validation.md).
 
 ## Initial target
 
@@ -30,7 +33,7 @@ make sanitize
 Independently tested scalar CPU kernels include stable softmax, learned-weight
 RMSNorm with epsilon, row-major matrix-vector multiply (`y = W*x`, explicit rows
 and columns, no bias), and SiLU gated product (`SiLU(gate) * up`). These are
-primitives used by the first-block path described below, not full model inference.
+primitives used by the first-block and full-forward paths described below.
 
 The new kernels use float32 products/accumulation and `sqrtf`/`expf`; softmax
 retains its original double-precision sum. RMSNorm sums squares before writing
@@ -361,3 +364,168 @@ block or synthetic full fixed-3B weight payload: the default suite does **not**
 prove full-block numerical composition; the optional five independent real-weight
 comparisons provide that evidence. No full model, cache or long-context
 correctness claim follows from this first-block result.
+
+## Complete uncached 3B text forward
+
+`include/forward.h` exposes `lunelette_forward(shard1, shard2, ids, count,
+ hidden, logits, hidden_13, error, capacity)`. Supply two distinct already-open
+shards explicitly; their order is immaterial. No configuration/index parser is
+added. The inspected checkpoint config fixes **26 layers, hidden 3072, vocabulary
+131072, intermediate 9216, 32/8 heads of dimension 128, epsilon 1e-5**, YaRN as
+above, no sliding window, and tied word embeddings. The index places the final
+`language_model.model.norm.weight` in shard 00002 and embeddings in shard 00001;
+layer tensors are resolved independently, including layers split across shards.
+All required shapes/ranks/BF16 dtypes and duplicate required names are checked
+before execution. Unrelated vision weights are ignored, never executed.
+
+The original first-block API now wraps the same private layer executor at index
+zero. The forward function returns caller-owned final-normalized `hidden[N,3072]`
+and last-token-only `logits[131072]`. Optional `hidden_13[N,3072]` captures the
+residual after 13 blocks, **not** a normalized activation. The final hidden state
+corresponds to official `hidden_states[26]`, which already includes final RMSNorm.
+The tied head is `embed_tokens.weight @ hidden[-1]`, without bias or softmax.
+See the header for disjoint-buffer, lifetime and concurrency contracts. All
+outputs remain unchanged on failure, even during the last vocabulary row read.
+The diagnostic buffer, if supplied, must be writable and disjoint from inputs
+and outputs. Allocation/read failures release all internally owned storage.
+
+Memory is bounded: one expanded matrix at a time (108 MiB maximum), approximately
+37 MiB layer workspace at 256 tokens, plus current hidden state, optional
+checkpoint and transactional logits. Matrices are freed between layers;
+weights are streamed again on each call. Vocabulary projection expands **one
+3072-element row at a time**, not the whole embedding matrix or FP32 model.
+Activations and projection/attention reductions remain FP32; model RMSNorm now
+uses FP32 squares, a **double sum**, rounded FP32 mean, and FP32 scale/output.
+The public `lunelette_rmsnorm` sequential-FP32 contract remains unchanged.
+This is not a generic tensor/backend framework or an optimized runtime.
+
+```sh
+make forward-integration \
+  WEIGHTS=models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
+  WEIGHTS2=models/Ministral-3-3B-Instruct-2512-BF16/model-00002-of-00002.safetensors \
+  FIXTURES=fixtures/reference
+# Individual cases; same executable under build/sanitize after make sanitize:
+./build/compare_forward SHARD1 SHARD2 FIXTURE.safetensors [MORE_FIXTURES...]
+```
+
+The existing five independent fixtures supply I64 `input_ids[1,N]`, F32
+`hidden_13[1,N,3072]`, `hidden_26[1,N,3072]`, `last_logits[1,131072]`.
+Provenance/tokenization is the same as the first-block fixtures above:
+checkpoint revision `b6d637bef2393152b3da2b2fde72eecdee30557e`, official full
+uncached eager CPU FP32 forward, Python 3.12.11 / torch 2.15.0 / Transformers
+5.0.0 / safetensors 0.8.0, four reference threads. Inspected upstream source:
+[Transformers v5.0.0, commit 08810b1](https://github.com/huggingface/transformers/blob/08810b1e278938278c50153ee1edfd7a20a759da/src/transformers/models/ministral3/modeling_ministral3.py).
+No reference outputs were regenerated from C. The comparator reports maximum
+absolute/relative errors, RMSE, failing-element count, worst tolerance ratio and
+top-1 IDs, exact ties and margins. Logits retain the **unchanged** elementwise
+`abs_error <= 2e-4 + 1e-4*abs(reference)` allowance. Only full-depth hidden_13/26
+use the [provisional per-token RMS/cosine/absolute contract](docs/full-depth-validation.md),
+calibrated using PyTorch-only variation and frozen before held-out outputs.
+Their strict failure counts remain diagnostics. Nonfinite data always rejects;
+isolated-layer comparisons are unchanged.
+
+### Reduction drift investigation
+
+The initial implementation retained all sequential float reductions from commit
+`5e1062e`. All five layer-13 checkpoints and last logits passed, with top-1
+agreement, but final hidden states failed for chat and longer. For chat exactly
+one of 73,728 hidden elements failed: flattened index 19662, C `0.0709941611`
+versus reference `0.0712088495`, 1.03654 times the existing allowance. Initial
+maximum errors were 0.00262451 at layer 13, 0.00121737 at final hidden (longer),
+and 0.000188351 at last logits (longer). Relative errors near zero are not a
+reliable accuracy summary.
+
+Controlled external experiments changed only reductions, with identical weights,
+architecture, fixtures and tolerance. On chat, widening only matrix-vector sums
+still failed (final-hidden maximum 0.00253677); widening both norm and matvec sums
+also failed (0.00210571). Widening **only RMSNorm's positive sum of squares**
+passed (0.000152588), with last-logit error 0.0000495911 instead of 0.0000956059.
+Therefore the targeted norm change addresses accumulated norm-rounding drift;
+there is no evidence here for an architecture, sharding or head-layout error.
+Remaining differences include sequential FP32 dot products, reference parallel
+reductions and nonlinear rounding; the experiments do not assign every residual
+error to one kernel or establish that the parallel FP32 reference is exact.
+No tolerance was loosened. First-block real comparisons still pass, now with
+normal-build maximum absolute error 1.1921e-6 across all five. The historical
+first-block error table above describes the original sequential-norm baseline.
+
+Default tests cover every required tensor's dtype/rank/dimensions, missing tensors,
+duplicate required tensors within/across shards, invalid IDs/counts/nulls/handles,
+upper token/count boundaries reaching I/O, zero-weight layer execution at indices
+0 and 25, in-place layer execution, late matrix/logit read failure with unchanged
+outputs, and the widened norm's rounding and in-place behavior. Private synthetic
+handles use a sparse 54 MiB all-zero backing store shared by descriptors; they do
+not construct a configurable miniature model or replace real-weight evidence.
+Comparator self-tests accept known matches and reject deliberate mismatches/NaNs.
+Existing embedding, first-block, reader and kernel tests are retained.
+
+Limits: one unpadded sequence of 1–256 supplied IDs starting at position zero;
+no KV cache, generation, tokenizer, batching, vision, quantization, GPU, 8B/14B,
+or arbitrary configurations. Finite checkpoint values are assumed; there is no
+exhaustive nonfinite-weight scan. Optional real fixtures exercise up to 150 tokens,
+not a real 256-token or long-context forward. These are bounded correctness tests,
+not throughput benchmarks or claims about cached execution.
+
+### Historical strict full-forward results and remaining gap
+
+The measurements below predate the separate bounded contract. Current normal
+reruns pass all five original and three held-out fixtures under that contract;
+the strict longer hidden diagnostic still fails at exactly 1,220 elements.
+See [current criteria, provenance and limitations](docs/full-depth-validation.md).
+
+Apple clang 17, portable `-O2` build, base Apple M5. CPU seconds measure forward
+only, excluding fixture loading/comparison; the complete five-case command took
+329.80 seconds wall time (other validation jobs also ran during that interval).
+
+| Fixture | Tokens | CPU seconds | max abs hidden_13 | max abs hidden_26 | max abs logits | Top-1 |
+|---|---:|---:|---:|---:|---:|---|
+| short | 6 | 9.62 | 2.4414e-4 | 1.5259e-4 | 3.0518e-5 | 6993 = 6993 |
+| multilingual | 24 | 35.24 | 2.4414e-4 | 1.5259e-4 | 3.2902e-5 | 11461 = 11461 |
+| code | 22 | 32.59 | 2.4414e-4 | 1.5259e-4 | 3.5763e-5 | 1032 = 1032 |
+| chat | 24 | 35.33 | 2.4414e-4 | 1.5259e-4 | 4.9591e-5 | 1052 = 1052 |
+| longer | 150 | 216.36 | 2.4414e-4 | **1.0195e-3** | 6.5088e-5 | 12359 = 12359 |
+
+All layer-13 and last-logit comparisons pass; final hidden passes **four of five**.
+**Known validation gap:** longer final hidden fails the unchanged tolerance at
+1,220 / 460,800 elements, RMSE 4.4723e-5. Worst allowance ratio is 3.82315 at
+flattened index 380137: actual -0.0549602099, reference -0.055746153. Its maximum
+relative error is 4.28806 near zero; last-logit maximum relative error is 0.142956.
+The historical strict five-fixture comparator correctly exited nonzero. Do not interpret top-1
+agreement, passing logits, or the norm experiment as proof that this residual
+hidden-state discrepancy is fully diagnosed. Norm summation was one demonstrated
+contributor, not an exclusive attribution of the remaining longer-case error.
+Subsequent identical-input replay of all 26 layers passed strict elementwise
+checks, while a PyTorch row-wise versus batched control itself failed strict
+full-depth hidden checks. This supports reduction-order accumulation sensitivity,
+not a proof that every remaining discrepancy is harmless. Strict failures remain
+visible alongside the new separately calibrated full-depth acceptance rule.
+
+Follow-up diagnosis (scratch-only variants, unchanged production kernels): widening
+attention accumulation still fails longer hidden_26 (679 elements, RMSE 4.0812e-5,
+max absolute error 1.0147e-3). Widening projection accumulation instead worsens it
+(9,643 elements, RMSE 1.2909e-4). Neither is a demonstrated fix.
+On identical captured final-layer Q/K/V inputs with shared rotated inputs, C and
+official Torch eager attention differ by at most 1.7286e-6; explicit Torch calls
+using the C scale and triangular mask reproduce official eager output exactly.
+Wide attention is closer to an FP64 oracle but farther from Torch eager locally.
+A model-weight projection probe also shows Torch GEMV versus batched GEMM differing
+by 4.2916e-6 on identical vector values. Thus reference reduction/backend shape
+sensitivity is measurable; it does not prove the entire remaining full-forward
+error is harmless accumulation drift. Full forward remains experimental. The
+separate bounded acceptance contract does not erase this strict discrepancy.
+
+Measured peak resident memory for the normal five-case command was 153,747,456
+bytes (146.6 MiB). ASan/UBSan short and chat both pass all checkpoints and top-1:
+short 18.34 s wall / 396,476,416 bytes RSS; chat 61.06 s / 409,370,624 bytes RSS.
+Sanitizer max absolute errors (hidden_13, hidden_26, logits) were respectively
+(1.2207e-4, 4.1962e-5, 3.1948e-5) and (1.2207e-4, 1.1826e-4, 5.1975e-5).
+Optimization/instrumentation changes floating-point contraction and rounding;
+these are not expected to be bitwise identical builds.
+
+Verification completed: normal, ASan/UBSan and NDEBUG synthetic suites;
+all-five embedding exact comparisons; all-five first-block comparisons in normal,
+ASan/UBSan and NDEBUG; full-forward normal all five (the longer hidden failure
+above); full-forward ASan/UBSan short and chat; `git diff --check`.
+Full-forward NDEBUG real comparisons and sanitizer multilingual/code/longer were
+not run. No cache, generation, accelerated or arbitrary-configuration validation
+is implied. No commits, downloads or dependency installation were made.

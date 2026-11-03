@@ -12,7 +12,7 @@ int main(int argc, char **argv)
     if (argc == 1 || (argc == 2 && strcmp(argv[1], "--help") == 0)) {
         puts("Usage: lunelette [--help | --version]\n"
              "Ministral 3 inference in C.\n"
-             "Embedding reader milestone; full inference and generation are not implemented.");
+             "Library: uncached 3B text forward to last-token logits; CLI generation is not implemented.");
         return 0;
     }
     fputs("Unknown argument. Use --help.\n", stderr);

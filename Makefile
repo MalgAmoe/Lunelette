@@ -19,7 +19,7 @@ $(BUILD)/test_math: tests/test_math.c src/math.c include/lunelette.h | $(BUILD)
 $(BUILD)/test_kernels: tests/test_kernels.c src/math.c include/lunelette.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_kernels.c src/math.c -o $@ $(LDLIBS)
 
-test: $(BUILD)/compare_block $(BUILD)/test_attention $(BUILD)/compare_attention $(BUILD)/compare_projections all $(BUILD)/test_math $(BUILD)/test_kernels $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
+test: $(BUILD)/test_forward $(BUILD)/compare_forward $(BUILD)/compare_block $(BUILD)/test_attention $(BUILD)/compare_attention $(BUILD)/compare_projections all $(BUILD)/test_math $(BUILD)/test_kernels $(BUILD)/test_safetensors $(BUILD)/compare_embeddings
 	./$(BUILD)/test_safetensors $(BUILD)/test-safetensors.tmp $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors $(BUILD)/synthetic-mismatch.safetensors
 	./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-match.safetensors
 	@if ./$(BUILD)/compare_embeddings $(BUILD)/synthetic-weights.safetensors $(BUILD)/synthetic-mismatch.safetensors >$(BUILD)/mismatch.log 2>&1; then cat $(BUILD)/mismatch.log; exit 1; fi
@@ -28,6 +28,8 @@ test: $(BUILD)/compare_block $(BUILD)/test_attention $(BUILD)/compare_attention 
 	./$(BUILD)/test_attention
 	./$(BUILD)/compare_attention --self-test
 	./$(BUILD)/compare_block --self-test
+	./$(BUILD)/compare_forward --self-test
+	./$(BUILD)/test_forward
 	./$(BUILD)/test_math
 	./$(BUILD)/test_kernels
 	./$(BUILD)/lunelette --version
@@ -60,10 +62,21 @@ $(BUILD)/test_attention: tests/test_attention.c tests/rope_golden.h src/attentio
 $(BUILD)/compare_attention: tests/compare_attention.c src/attention.c src/safetensors.c include/attention.h include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_attention.c src/attention.c src/safetensors.c -o $@ $(LDLIBS)
 
-$(BUILD)/compare_block: tests/compare_block.c src/block.c src/attention.c src/math.c src/safetensors.c include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+$(BUILD)/compare_block: tests/compare_block.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_block.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
 
 .PHONY: block-integration
 block-integration: $(BUILD)/compare_block
 	@test -n "$(WEIGHTS)" -a -n "$(FIXTURES)" || { echo 'Set WEIGHTS=layer0-shard FIXTURES=fixture-directory'; exit 1; }
 	./$(BUILD)/compare_block "$(WEIGHTS)" $(foreach f,short multilingual code chat longer,"$(FIXTURES)/$(f).safetensors")
+
+$(BUILD)/compare_forward: tests/compare_forward.c tests/full_depth.h src/forward.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_forward.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
+
+.PHONY: forward-integration
+forward-integration: $(BUILD)/compare_forward
+	@test -n "$(WEIGHTS)" -a -n "$(WEIGHTS2)" -a -n "$(FIXTURES)" || { echo 'Set WEIGHTS=shard1 WEIGHTS2=shard2 FIXTURES=fixture-directory'; exit 1; }
+	./$(BUILD)/compare_forward "$(WEIGHTS)" "$(WEIGHTS2)" $(foreach f,short multilingual code chat longer,"$(FIXTURES)/$(f).safetensors")
+
+$(BUILD)/test_forward: tests/test_forward.c src/forward.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_forward.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
