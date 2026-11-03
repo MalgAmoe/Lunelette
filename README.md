@@ -3,9 +3,10 @@
 A learning-first Ministral 3 inference engine in C, with a path toward an
 optimized, portable runtime.
 
-**Status:** real-weight embedding milestone, not yet model inference. A bounded
-safetensors reader and BF16 embedding lookup are implemented; no tokenizer,
-transformer, or generation loop.
+**Status:** real-weight embedding and layer-0 pre-attention projections validated,
+not yet model inference. A bounded safetensors reader, BF16 embedding lookup,
+input RMSNorm and Q/K/V comparator are implemented; no tokenizer, attention,
+complete transformer block, or generation loop.
 
 ## Initial target
 
@@ -50,8 +51,8 @@ Always-active synthetic tests cover hand-calculated values, weighted/zero-vector
 RMSNorm, epsilon, non-square matrices in both directions, finite SiLU extremes,
 in-place cases and invalid arguments. Arithmetic checks use combined absolute
 (1e-6) and relative (2e-6) tolerances for these small examples, with error reports
-on failure. No PyTorch activation comparison has yet been performed for these
-kernels. These unit tests are not evidence of model correctness.
+on failure. Real-weight layer-0 norm/projection comparisons are described below; the small
+unit tests alone are not evidence of model correctness.
 
 ## Layout
 
@@ -143,6 +144,71 @@ violates the unchanged-file contract, and stdio may retain previously buffered
 payload bytes. Portable C11 has no reliable truncation/buffer-invalidation hook
 for that scenario. Truncation before open is tested at every byte position;
 read failures are checked by the reader and diagnosed by the comparator.
+
+## Optional layer-0 pre-attention comparison
+
+```sh
+make build/compare_projections
+./build/compare_projections FIXTURE.safetensors WEIGHT_SHARD [MORE_SHARDS...]
+```
+
+All paths are explicit caller-supplied resources; no downloads or Python are
+needed by C. Supply 1–16 shards containing exactly one copy of each selected
+weight. The comparator does not parse the shard index. It supports this 3B layout
+only: `language_model.model.embed_tokens.weight` BF16 `[131072,3072]`,
+`language_model.model.layers.0.input_layernorm.weight` BF16 `[3072]`, and
+`language_model.model.layers.0.self_attn.{q,k,v}_proj.weight` BF16
+`[4096,3072]`, `[1024,3072]`, `[1024,3072]`. Other shapes/dtypes fail.
+Only embedding rows, the learned norm vector and one projection matrix at a time
+are read/expanded. Peak matrix storage is 48 MiB, not the entire checkpoint.
+
+The fixture must contain I64 `input_ids` `[1,N]` (1–256 tokens), and F32
+`input_norm`, `q`, `k`, `v` with shapes `[1,N,3072]`, `[1,N,4096]`,
+`[1,N,1024]`, `[1,N,1024]`. Capture projections **before head reshape and
+RoPE**, with no bias. Reference generation must independently expand selected
+BF16 tensors to float32, look up the supplied IDs, compute
+`weight * (embedding * rsqrt(mean(embedding**2) + 1e-5))`, then PyTorch
+`F.linear(normalized, W)` (`W` is row-major `[out,in]`). Record model revision,
+IDs/tokenizer settings, library versions, dtype/device, shapes and capture points
+alongside fixtures. The official [Transformers v5.0.0 implementation](https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/ministral3/modeling_ministral3.py)
+confirms norm ordering and projection placement; PyTorch
+[linear](https://docs.pytorch.org/docs/stable/generated/torch.nn.functional.linear.html)
+defines the matrix orientation.
+
+C uses sequential float32 reductions; PyTorch CPU reductions may use a different
+order. Acceptance is elementwise `abs(actual-reference) <= 2e-4 +
+1e-4*abs(reference)`; nonfinite values fail. These explicit allowances cover
+3072-term float32 accumulation differences and cancellation near zero, not BF16
+runtime arithmetic. Every stage reports maximum absolute error and maximum
+relative error (`abs_error / max(abs(reference),1e-12)`). Near-zero relative errors
+can be large even when absolute errors are tiny; neither metric alone determines
+acceptance. Tolerances are fixed, not automatically relaxed.
+
+Independent CPU float32 PyTorch 2.15.0 / Transformers 5.0.0 / safetensors 0.8.0
+fixtures for revision `b6d637bef2393152b3da2b2fde72eecdee30557e` passed for the
+6-token short and 24-token multilingual inputs. Maximum absolute errors across
+both (optimized normal build): norm `2.289e-5`, Q `2.098e-5`, K `1.526e-5`, V `2.146e-6`.
+Maximum relative errors respectively: `2.752e-6`, `0.01151`, `0.000904`,
+`0.03411`. Sanitizer comparisons also pass; different optimization/reduction
+behavior gives a largest absolute error of `2.289e-5` and relative error of
+`0.04241`. NDEBUG comparisons match the normal build. A deliberately corrupted
+real Q fixture is rejected by the complete CLI pipeline. External
+fixture-generation scripts/results are not bundled.
+
+`st_load_bf16` is a reusable bounded tensor-to-F32 helper: the caller owns the
+float buffer, validates the desired shape, and passes the exact whole-tensor
+count (not a capacity). It uses 4096 bytes of scratch space, validates dtype,
+count and handle membership, and may partially modify output on I/O failure.
+It allocates nothing and retains no state. See the header contract.
+Synthetic tests cover chunk boundaries, empty/scalar tensors, invalid counts,
+dtype, foreign descriptors and special BF16 values. The comparator's tiny
+hand-calculated weighted norm/non-square projection self-test checks acceptance,
+deliberate mismatch and nonfinite rejection, but does not test its whole file
+pipeline synthetically. Real fixtures exercise that pipeline.
+
+This is a targeted diagnostic tool, not an execution framework: it recomputes
+embedding/norm per projection to bound storage. No attention, RoPE, residual,
+MLP, cache, generation, batching, quantization or GPU behavior is validated.
 
 ## Next milestones
 

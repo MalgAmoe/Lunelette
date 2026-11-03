@@ -471,3 +471,29 @@ int st_embedding(st_file *s, const st_tensor *t, int64_t token, float *out, size
     free(row);
     return rc;
 }
+
+int st_load_bf16(st_file *s, const st_tensor *t, float *out, size_t count)
+{
+    if (!t || !out || t->dtype != ST_BF16 || count > SIZE_MAX / sizeof(float) ||
+        t->end < t->begin || (t->end - t->begin) / 2 != count ||
+        st_read(s, t, 0, NULL, 0)) {
+        return -1;
+    }
+    /* Fixed scratch space; only the caller-selected tensor is read. */
+    unsigned char bytes[4096];
+    for (size_t offset = 0; offset < count;) {
+        size_t chunk = count - offset;
+        if (chunk > sizeof bytes / 2) {
+            chunk = sizeof bytes / 2;
+        }
+        if (st_read(s, t, (uint64_t)offset * 2, bytes, chunk * 2)) {
+            return -1;
+        }
+        for (size_t i = 0; i < chunk; i++) {
+            out[offset + i] = st_bf16_to_f32((uint16_t)(bytes[2 * i] |
+                                                      (unsigned)bytes[2 * i + 1] << 8));
+        }
+        offset += chunk;
+    }
+    return 0;
+}

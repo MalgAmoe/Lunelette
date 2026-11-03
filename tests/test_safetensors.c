@@ -134,6 +134,15 @@ int main(int argc, char **argv) {
     CHECK(st_read(&s, w, UINT64_MAX, row, 1) == -1);
     CHECK(st_read(&s, w, 7, row, 2) == -1);
     st_tensor foreign = *w; CHECK(st_read(&s, &foreign, 0, row, 1) == -1);
+    float loaded[4];
+    CHECK(!st_load_bf16(&s, w, loaded, 4));
+    CHECK(loaded[0] == 1 && loaded[1] == -2 && signbit(loaded[2]) && isinf(loaded[3]));
+    loaded[0] = 9;
+    CHECK(st_load_bf16(&s, w, loaded, 3) == -1 && loaded[0] == 9);
+    CHECK(st_load_bf16(&s, w, loaded, SIZE_MAX) == -1);
+    CHECK(st_load_bf16(&s, w, NULL, 4) == -1);
+    CHECK(st_load_bf16(&s, &foreign, loaded, 4) == -1);
+    CHECK(st_load_bf16(&s, st_find(&s, "f"), loaded, 1) == -1);
     st_close(&s);
     const uint16_t bits[] = {0,0x8000,0x3f80,0xc000,1,0x7f7f,0x7f80,0xff80,0x7fc1};
     for (size_t i = 0; i < sizeof bits/sizeof bits[0]; i++) {
@@ -183,6 +192,28 @@ int main(int argc, char **argv) {
         if (boundary % 2 == 0) good(header, 4);
         else bad(header, 4);
     }
+    /* Cross the loader's fixed scratch boundary, plus empty/scalar tensors. */
+    file("{\"large\":{\"dtype\":\"BF16\",\"shape\":[2050],\"data_offsets\":[0,4100]},"
+         "\"empty\":{\"dtype\":\"BF16\",\"shape\":[0],\"data_offsets\":[4100,4100]},"
+         "\"scalar\":{\"dtype\":\"BF16\",\"shape\":[],\"data_offsets\":[4100,4102]}}", 4102);
+    f = fopen(path, "r+b");
+    CHECK(f);
+    CHECK(!fseek(f, -6, SEEK_END));
+    /* End includes the scalar: mark elements 2048/2049 across the chunk split. */
+    const unsigned char boundary_values[] = {0x80, 0x3f, 0, 0xc0, 0, 0};
+    CHECK(fwrite(boundary_values, 1, sizeof boundary_values, f) == sizeof boundary_values);
+    CHECK(!fclose(f));
+    CHECK(!st_open(&s, path, error, sizeof error));
+    float *large = malloc(2050 * sizeof *large);
+    CHECK(large);
+    CHECK(!st_load_bf16(&s, st_find(&s, "large"), large, 2050));
+    for (size_t i = 0; i < 2050; i++) {
+        CHECK(large[i] == (i == 2048 ? 1.0f : i == 2049 ? -2.0f : 0.0f));
+    }
+    CHECK(!st_load_bf16(&s, st_find(&s, "empty"), large, 0));
+    CHECK(!st_load_bf16(&s, st_find(&s, "scalar"), large, 1));
+    free(large);
+    st_close(&s);
     capacity_tests();
     /* Every truncated prefix/header/data position must fail. */
     for (size_t n = 0; n < 8 + strlen(valid) + 20; n++) {

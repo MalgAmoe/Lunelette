@@ -47,4 +47,13 @@ float st_bf16_to_f32(uint16_t bits);
 /* BF16 rank-2 only. Output count must equal width; invalid tokens never read. */
 int st_embedding(st_file *s, const st_tensor *t, int64_t token, float *out, size_t count);
 
+/* Load exactly count BF16 elements into caller-owned out[count], with fixed-size
+ * scratch storage and no allocation. Caller validates rank/shape separately;
+ * count must equal the whole tensor element count, not merely buffer capacity.
+ * Tensor must be borrowed from s, descriptors/file unchanged. Returns -1 on
+ * invalid arguments (output unchanged) or I/O failure (output may be partial).
+ * Output must not overlap the handle/descriptors. Same thread rules as st_read.
+ */
+int st_load_bf16(st_file *s, const st_tensor *t, float *out, size_t count);
+
 #endif
