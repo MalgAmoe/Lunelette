@@ -6,6 +6,8 @@ macOS 15+, Apple Silicon (Apple7 GPU family or newer), the Command Line Tools
 with a macOS SDK, and enough unified memory. Development validation uses a
 32 GiB machine; smaller-memory configurations are not promised to fit.
 
+All shell commands here run from the repository root, not `docs/`.
+
 ```sh
 make BUILD=build/cpu test
 make METAL=1 BUILD=build/metal test
