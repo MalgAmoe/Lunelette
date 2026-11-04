@@ -12,6 +12,16 @@ trap 'rm -f cli-test.out cli-test.err' EXIT HUP INT TERM
 "$cli" --version >/dev/null
 reject
 reject --invalid
+reject --metal-prefill mps
+reject --backend cpu --metal-prefill custom
+reject --backend metal --metal-prefill bad
+grep -- '--metal-prefill requires' cli-test.err >/dev/null
+reject --backend metal --metal-prefill
+reject --backend metal --metal-prefill mps --metal-prefill custom
+for mode in mps custom; do
+    reject --backend metal --metal-prefill "$mode" --tokenizer missing --prompt x --dump-prompt-ids
+    if grep 'Unknown or duplicate\|--metal-prefill requires' cli-test.err >/dev/null; then exit 1; fi
+done
 reject --backend unknown
 grep -- '--backend must be cpu or metal' cli-test.err >/dev/null
 reject --backend metal --uncached

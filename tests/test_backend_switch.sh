@@ -8,7 +8,8 @@ for mode in 0 1 0 1; do
     links=$(otool -L "$build/lunelette")
     if [ "$mode" = 1 ]; then
         printf '%s\n' "$links" | grep -q '/Metal.framework/'
-    elif printf '%s\n' "$links" | grep -q '/Metal.framework/'; then
+        printf '%s\n' "$links" | grep -q '/MetalPerformanceShaders.framework/'
+    elif printf '%s\n' "$links" | grep -Eq '/(Metal|MetalPerformanceShaders)\.framework/'; then
         echo 'CPU executable still links Metal' >&2
         exit 1
     fi

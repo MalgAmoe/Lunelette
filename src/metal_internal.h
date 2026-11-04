@@ -23,6 +23,8 @@ enum { METAL_X, METAL_INPUT_NORM, METAL_Q, METAL_K, METAL_V, METAL_ROTATED_Q,
     METAL_FINAL, METAL_LOGITS, METAL_COS, METAL_SIN, METAL_POSITIONS, METAL_SCORE,
     METAL_BUFFER_COUNT };
 
+@class LuneletteMPSCache;
+
 @interface LuneletteMetalOwner : NSObject {
 @public
     id<MTLDevice> device;
@@ -32,6 +34,8 @@ enum { METAL_X, METAL_INPUT_NORM, METAL_Q, METAL_K, METAL_V, METAL_ROTATED_Q,
     id<MTLBuffer> buffers[METAL_BUFFER_COUNT];
     id<MTLBuffer> keys[LUNELETTE_MODEL_LAYERS];
     id<MTLBuffer> values[LUNELETTE_MODEL_LAYERS];
+    lunelette_metal_prefill_mode prefill_mode;
+    LuneletteMPSCache *mps_cache; /* Current shape only; cache never retains this owner. */
     size_t length;
     bool valid;
 }
@@ -49,5 +53,9 @@ int lunelette_metal_encode_operator(LuneletteMetalOwner *owner, id<MTLCommandBuf
 /* Error strings are caller-owned; no Objective-C exception is used for control flow. */
 int lunelette_metal_encode(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command,
     size_t count, char *error, size_t capacity);
+int lunelette_metal_mps_prepare(LuneletteMetalOwner *owner, size_t count,
+    char *error, size_t capacity);
+int lunelette_metal_mps_project(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command,
+    size_t weight);
 int lunelette_metal_yarn(uint32_t position, float cosine[128], float sine[128]);
 #endif

@@ -1,4 +1,6 @@
-#include "metal_internal.h"
+#include "metal_mps.h"
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
+#import <objc/runtime.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -161,6 +163,296 @@ static void test_projection(LuneletteMetalOwner *owner)
     }
 }
 
+static void test_mps_projection(LuneletteMetalOwner *owner)
+{
+    const size_t counts[] = {6, 24, 150};
+    const size_t rows[] = {7, 31, 65};
+    const size_t columns[] = {13, 127, 3073};
+    for (size_t t = 0; t < 3; t++) {
+        size_t m = counts[t], n = rows[t], k = columns[t];
+        id<MTLBuffer> input = buffer(owner, m * k);
+        id<MTLBuffer> weights = buffer(owner, n * k);
+        id<MTLBuffer> output = buffer(owner, m * n);
+        float *x = input.contents;
+        float *w = weights.contents;
+        for (size_t i = 0; i < m * k; i++) {
+            x[i] = ((int)((i * 37 + 11) % 257) - 128) / 127.0f;
+        }
+        for (size_t i = 0; i < n * k; i++) {
+            w[i] = ((int)((i * 53 + 7) % 251) - 125) / 131.0f;
+        }
+        MPSMatrix *a = lunelette_metal_mps_view(input, m, k);
+        MPSMatrix *b = lunelette_metal_mps_view(weights, n, k);
+        MPSMatrix *c = lunelette_metal_mps_view(output, m, n);
+        CHECK(a && b && c && b.data == weights);
+        CHECK(a.rowBytes == k * sizeof(float) && b.rowBytes == k * sizeof(float));
+        MPSMatrixMultiplication *kernel = lunelette_metal_mps_kernel(owner->device, m, n, k);
+        CHECK(kernel != nil);
+        for (size_t repeat = 0; repeat < 2; repeat++) {
+            id<MTLCommandBuffer> command = [owner->queue commandBuffer];
+            CHECK(command != nil);
+            [kernel encodeToCommandBuffer:command leftMatrix:a rightMatrix:b resultMatrix:c];
+            complete(command);
+            const float *actual = output.contents;
+            double maximum = 0;
+            for (size_t i = 0; i < m; i++) {
+                for (size_t j = 0; j < n; j++) {
+                    double expected = 0;
+                    for (size_t l = 0; l < k; l++) {
+                        expected += (double)x[i * k + l] * w[j * k + l];
+                    }
+                    double delta = fabs(actual[i * n + j] - expected);
+                    CHECK(isfinite(actual[i * n + j]));
+                    CHECK(delta <= 2e-4 + 1e-4 * fabs(expected));
+                    if (delta > maximum) {
+                        maximum = delta;
+                    }
+                }
+            }
+            printf("MPS synthetic %zu x %zu x %zu repeat %zu maxabs %.9g\n",
+                m, n, k, repeat, maximum);
+        }
+    }
+    CHECK(lunelette_metal_mps_kernel(nil, 6, 7, 13) == nil);
+    CHECK(lunelette_metal_mps_kernel(owner->device, 0, 7, 13) == nil);
+    CHECK(lunelette_metal_mps_kernel(owner->device, 257, 7, 13) == nil);
+    CHECK(lunelette_metal_mps_kernel(owner->device, 6, 0, 13) == nil);
+    CHECK(lunelette_metal_mps_kernel(owner->device, 6, 7, SIZE_MAX) == nil);
+    CHECK(lunelette_metal_mps_view(nil, 6, 13) == nil);
+    CHECK(lunelette_metal_mps_view(buffer(owner, 1), SIZE_MAX, 13) == nil);
+    CHECK(lunelette_metal_mps_view(buffer(owner, 1), 0, 13) == nil);
+    CHECK(lunelette_metal_mps_view(buffer(owner, 1), 6, 13) == nil);
+}
+
+/* Swizzle only concrete methods, never inherited NSObject allocation methods.
+ * Tests run serially and restore every method before leaving the scope. */
+static size_t allocation_index;
+static size_t allocation_fail_at;
+static bool fail_allocation(void)
+{
+    return allocation_index++ == allocation_fail_at;
+}
+
+@interface MPSMatrixDescriptor (LuneletteFailureTest)
++ (instancetype)test_rows:(NSUInteger)rows columns:(NSUInteger)columns
+    rowBytes:(NSUInteger)bytes dataType:(MPSDataType)type;
+@end
+@implementation MPSMatrixDescriptor (LuneletteFailureTest)
++ (instancetype)test_rows:(NSUInteger)rows columns:(NSUInteger)columns
+    rowBytes:(NSUInteger)bytes dataType:(MPSDataType)type
+{
+    if (fail_allocation()) {
+        return nil;
+    }
+    return [self test_rows:rows columns:columns rowBytes:bytes dataType:type];
+}
+@end
+
+@interface MPSMatrix (LuneletteFailureTest)
+- (instancetype)initTestWithBuffer:(id<MTLBuffer>)buffer descriptor:(MPSMatrixDescriptor *)descriptor;
+@end
+@implementation MPSMatrix (LuneletteFailureTest)
+- (instancetype)initTestWithBuffer:(id<MTLBuffer>)buffer descriptor:(MPSMatrixDescriptor *)descriptor
+{
+    if (fail_allocation()) {
+        return nil;
+    }
+    return [self initTestWithBuffer:buffer descriptor:descriptor];
+}
+@end
+
+@interface MPSMatrixMultiplication (LuneletteFailureTest)
+- (instancetype)initTestWithDevice:(id<MTLDevice>)device transposeLeft:(BOOL)left
+    transposeRight:(BOOL)right resultRows:(NSUInteger)rows resultColumns:(NSUInteger)columns
+    interiorColumns:(NSUInteger)interior alpha:(double)alpha beta:(double)beta;
+@end
+@implementation MPSMatrixMultiplication (LuneletteFailureTest)
+- (instancetype)initTestWithDevice:(id<MTLDevice>)device transposeLeft:(BOOL)left
+    transposeRight:(BOOL)right resultRows:(NSUInteger)rows resultColumns:(NSUInteger)columns
+    interiorColumns:(NSUInteger)interior alpha:(double)alpha beta:(double)beta
+{
+    if (fail_allocation()) {
+        return nil;
+    }
+    return [self initTestWithDevice:device transposeLeft:left transposeRight:right
+        resultRows:rows resultColumns:columns interiorColumns:interior alpha:alpha beta:beta];
+}
+@end
+
+static void swap_kernel_failure(void)
+{
+    method_exchangeImplementations(class_getInstanceMethod([MPSMatrixMultiplication class],
+        @selector(initWithDevice:transposeLeft:transposeRight:resultRows:resultColumns:interiorColumns:alpha:beta:)),
+        class_getInstanceMethod([MPSMatrixMultiplication class],
+        @selector(initTestWithDevice:transposeLeft:transposeRight:resultRows:resultColumns:interiorColumns:alpha:beta:)));
+}
+
+static void swap_descriptor_failure(void)
+{
+    method_exchangeImplementations(class_getClassMethod([MPSMatrixDescriptor class],
+        @selector(matrixDescriptorWithRows:columns:rowBytes:dataType:)),
+        class_getClassMethod([MPSMatrixDescriptor class],
+        @selector(test_rows:columns:rowBytes:dataType:)));
+}
+
+static void swap_view_failure(void)
+{
+    method_exchangeImplementations(class_getInstanceMethod([MPSMatrix class],
+        @selector(initWithBuffer:descriptor:)), class_getInstanceMethod([MPSMatrix class],
+        @selector(initTestWithBuffer:descriptor:)));
+}
+
+@interface LuneletteMPSCache (LuneletteFailureTest)
++ (instancetype)test_new;
+@end
+@implementation LuneletteMPSCache (LuneletteFailureTest)
++ (instancetype)test_new
+{
+    return nil;
+}
+@end
+
+static void test_cache_allocation_failure(LuneletteMetalOwner *owner)
+{
+    Class type = [LuneletteMPSCache class];
+    Method original = class_getClassMethod(type, @selector(new));
+    /* Install an override on this class before swapping: never mutate the
+     * inherited NSObject +new shared by unrelated runtime objects. */
+    CHECK(class_addMethod(object_getClass(type), @selector(new),
+        method_getImplementation(original), method_getTypeEncoding(original)));
+    Method local = class_getClassMethod(type, @selector(new));
+    Method failure = class_getClassMethod(type, @selector(test_new));
+    method_exchangeImplementations(local, failure);
+    char error[512];
+    __weak id old = owner->mps_cache;
+    CHECK(lunelette_metal_mps_prepare(owner, 24, error, sizeof error) != 0);
+    CHECK(old == owner->mps_cache);
+    method_exchangeImplementations(local, failure);
+}
+
+static void test_mps_cache(void)
+{
+    @autoreleasepool {
+        LuneletteMetalOwner *owner = [LuneletteMetalOwner new];
+        owner->device = MTLCreateSystemDefaultDevice();
+        CHECK(owner->device != nil);
+        /* Alias buffers deliberately: validate mapping/lifetimes without loading
+         * a model or allocating a second resident weight set. No encoding here. */
+        id<MTLBuffer> weight = buffer(owner,
+            (size_t)LUNELETTE_MODEL_INNER * LUNELETTE_MODEL_HIDDEN);
+        id<MTLBuffer> scratch;
+        const size_t scratch_elements = (size_t)24 * LUNELETTE_MODEL_INNER;
+        for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+            owner->weights[i] = weight;
+        }
+        for (size_t i = 0; i < METAL_BUFFER_COUNT; i++) {
+            owner->buffers[i] = buffer(owner, scratch_elements);
+        }
+        scratch = owner->buffers[METAL_INPUT_NORM];
+        char error[512];
+        const size_t counts[] = {6, 24, 6};
+        for (size_t i = 0; i < 3; i++) {
+            __weak id previous = owner->mps_cache;
+            CHECK(lunelette_metal_mps_prepare(owner, counts[i], error, sizeof error) == 0);
+            CHECK(previous == nil);
+            LuneletteMPSCache *cache = owner->mps_cache;
+            const size_t slots[] = {1, 2, 3, 4, 6, 7, 8};
+            const int inputs[] = {METAL_INPUT_NORM, METAL_INPUT_NORM, METAL_INPUT_NORM,
+                METAL_ATTENTION, METAL_POST_NORM, METAL_POST_NORM, METAL_GATED};
+            const int outputs[] = {METAL_Q, METAL_K, METAL_V, METAL_O, METAL_GATE,
+                METAL_UP, METAL_DOWN};
+            for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+                for (size_t p = 0; p < 7; p++) {
+                    size_t w = 2 + layer * LUNELETTE_MODEL_BLOCK_WEIGHTS + slots[p];
+                    CHECK(cache->inputs[w].data == owner->buffers[inputs[p]]);
+                    CHECK(cache->outputs[w].data == owner->buffers[outputs[p]]);
+                    CHECK(cache->weights[w].data == weight);
+                    CHECK(cache->inputs[w].rows == counts[i]);
+                    CHECK(cache->outputs[w].columns == cache->weights[w].rows);
+                    CHECK(cache->inputs[w].columns == cache->weights[w].columns);
+                    CHECK(cache->weights[w].rowBytes == cache->weights[w].columns * 4);
+                    CHECK(cache->kernels[p] != nil);
+                }
+            }
+            cache = nil;
+            __weak id current = owner->mps_cache;
+            CHECK(current != nil);
+            CHECK(lunelette_metal_mps_prepare(owner, counts[i], error, sizeof error) == 0);
+            CHECK(current == owner->mps_cache);
+            /* Failed preparation retains old complete shape transactionally. */
+            owner->buffers[METAL_INPUT_NORM] = nil;
+            CHECK(lunelette_metal_mps_prepare(owner, counts[i] + 1,
+                error, sizeof error) != 0);
+            CHECK(current == owner->mps_cache);
+            owner->buffers[METAL_INPUT_NORM] = scratch;
+        }
+        /* Inject first, interior and final descriptor/view allocation failure.
+         * Each must preserve the old cache and release partial new resources. */
+        const size_t failures[] = {0, 97, 545};
+        for (size_t kind = 0; kind < 2; kind++) {
+            if (kind == 0) {
+                swap_descriptor_failure();
+            } else {
+                swap_view_failure();
+            }
+            for (size_t i = 0; i < 3; i++) {
+                allocation_index = 0;
+                allocation_fail_at = failures[i];
+                __weak id old = owner->mps_cache;
+                CHECK(lunelette_metal_mps_prepare(owner, 24, error, sizeof error) != 0);
+                CHECK(owner->mps_cache == old);
+            }
+            if (kind == 0) {
+                swap_descriptor_failure();
+            } else {
+                swap_view_failure();
+            }
+        }
+        test_cache_allocation_failure(owner);
+        swap_kernel_failure();
+        for (size_t i = 0; i < 7; i++) {
+            allocation_index = 0;
+            allocation_fail_at = i;
+            __weak id old = owner->mps_cache;
+            CHECK(lunelette_metal_mps_prepare(owner, 24, error, sizeof error) != 0);
+            CHECK(owner->mps_cache == old);
+        }
+        swap_kernel_failure();
+        lunelette_metal context = {(__bridge void *)owner};
+        owner->prefill_mode = LUNELETTE_METAL_PREFILL_MPS;
+        owner->valid = true;
+        owner->buffers[METAL_INPUT_NORM] = nil;
+        const float *logits = (const float *)1;
+        int64_t ids[24] = {0};
+        CHECK(lunelette_metal_prefill(&context, ids, 24, &logits, error, sizeof error) != 0);
+        CHECK(logits == NULL && !owner->valid && owner->length == 0);
+        CHECK(strstr(error, "custom") != NULL);
+        CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error) != 0);
+        CHECK(lunelette_metal_reset(&context, error, sizeof error) == 0);
+        CHECK(owner->valid && owner->length == 0);
+        __weak id cache = owner->mps_cache;
+        owner->mps_cache = nil;
+        CHECK(cache == nil);
+    }
+}
+
+static void test_options(void)
+{
+    char error[512];
+    lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
+    CHECK(options.prefill == LUNELETTE_METAL_PREFILL_MPS);
+    options.prefill = (lunelette_metal_prefill_mode)99;
+    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options,
+        error, sizeof error) == NULL);
+    CHECK(strstr(error, "invalid prefill option") != NULL);
+    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options, NULL, 0) == NULL);
+    CHECK(lunelette_metal_create_with_options(NULL, NULL, NULL, error, sizeof error) == NULL);
+    options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
+    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options,
+        error, sizeof error) == NULL);
+    CHECK(lunelette_metal_create(NULL, NULL, NULL, 0) == NULL);
+}
+
 static void test_norm_element(LuneletteMetalOwner *owner)
 {
     const size_t width = 67, tokens = 2;
@@ -302,6 +594,7 @@ static void test_rope(LuneletteMetalOwner *owner)
 
 static void test_state(LuneletteMetalOwner *owner)
 {
+    owner->prefill_mode = LUNELETTE_METAL_PREFILL_CUSTOM;
     /* Borrow an owner in the internal wrapper: never pass this wrapper to destroy. */
     lunelette_metal context = {(__bridge void *)owner};
     const float *logits = (const float *)1;
@@ -392,7 +685,10 @@ int main(void)
         owner->device = MTLCreateSystemDefaultDevice();
         CHECK(owner->device != nil);
         CHECK(lunelette_metal_create_pipelines(owner, error, sizeof error) == 0);
+        test_options();
+        test_mps_cache();
         test_projection(owner);
+        test_mps_projection(owner);
         test_norm_element(owner);
         test_attention(owner);
         test_rope(owner);

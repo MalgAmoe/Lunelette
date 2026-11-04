@@ -135,10 +135,21 @@ static int allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capa
 lunelette_metal *lunelette_metal_create(const char *first, const char *second,
     char *error, size_t capacity)
 {
+    return lunelette_metal_create_with_options(first, second, NULL, error, capacity);
+}
+
+lunelette_metal *lunelette_metal_create_with_options(const char *first, const char *second,
+    const lunelette_metal_options *options, char *error, size_t capacity)
+{
     char fallback[512];
     if (!error || !capacity) {
         error = fallback;
         capacity = sizeof fallback;
+    }
+    lunelette_metal_prefill_mode mode = options ? options->prefill : LUNELETTE_METAL_PREFILL_MPS;
+    if (mode != LUNELETTE_METAL_PREFILL_MPS && mode != LUNELETTE_METAL_PREFILL_CUSTOM) {
+        snprintf(error, capacity, "Metal invalid prefill option; select MPS or CUSTOM");
+        return NULL;
     }
     @autoreleasepool {
         lunelette_metal_weights staged;
@@ -152,6 +163,7 @@ lunelette_metal *lunelette_metal_create(const char *first, const char *second,
             lunelette_metal_weights_close(&staged);
             return NULL;
         }
+        owner->prefill_mode = mode;
         owner->device = MTLCreateSystemDefaultDevice();
         if (!owner->device || ![owner->device supportsFamily:MTLGPUFamilyApple7]) {
             snprintf(error, capacity, "Metal requires a supported Apple Silicon GPU (Apple7+)");
@@ -245,6 +257,10 @@ static int execute(lunelette_metal *context, const int64_t *ids, size_t count,
     @autoreleasepool {
         /* No state publication until all encoders, completion and finite checks succeed. */
         owner->valid = false;
+        if (count > 1 && owner->prefill_mode == LUNELETTE_METAL_PREFILL_MPS &&
+            lunelette_metal_mps_prepare(owner, count, error, capacity) != 0) {
+            return -1;
+        }
         float *input = owner->buffers[METAL_X].contents;
         const float *embedding = owner->weights[0].contents;
         uint32_t *positions = owner->buffers[METAL_POSITIONS].contents;

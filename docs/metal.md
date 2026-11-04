@@ -45,8 +45,30 @@ support. The larger checkpoint position limit is not a supported context claim.
 * Scratch is reused across layers and steps. Each prefill or decode uses one
   command buffer, with one completion wait before publishing last-token logits.
   There are no per-operator waits/readbacks, warm-path weight uploads or new
-  weight/scratch/KV buffers. Prefill is a simple full-prompt path, not tuned GEMM.
-* FP32 safe/precise Metal math, contraction disabled, compensated per-lane
+  weight/scratch/KV buffers. Multi-token block projections default to MPS GEMM.
+* **Default change:** `create()` and NULL/default `create_with_options()` options
+  now select MPS for the seven block projections when count > 1. Select
+  `--backend metal --metal-prefill custom` or `LUNELETTE_METAL_PREFILL_CUSTOM`
+  through `lunelette_metal_options` for the precise custom path. The CLI rejects
+  `--metal-prefill` with CPU and rejects unknown/duplicate modes. Decode,
+  single-token prefill and the vocabulary head always retain custom arithmetic.
+* MPS descriptors use Float32 storage, explicit tight rowBytes and
+  `transposeLeft=NO, transposeRight=YES`, alpha=1, beta=0. Inputs are token-major;
+  existing output-major weights are viewed directly, without copying/repacking.
+  Apple does not specify full-FP32 internal accumulation in the inspected API;
+  agreement is empirical, not an arithmetic guarantee. The strict acceptance
+  bound remains `2e-4 + 1e-4*abs(reference)`, with exact greedy IDs. Synthetic
+  evidence has been verified on Apple M5/macOS; other devices need validation.
+* Only the current prefill shape is cached: seven kernels and 182 projection
+  triples of matrix views. Repeating a shape reuses them; changing count replaces
+  them transactionally, including after reset. Views retain buffers but not the
+  owner, so no ownership cycle exists. Count remains bounded to 256.
+  All descriptors/kernels/views are prepared before encoding any command work.
+  Allocation failure invalidates the sequence without publishing a prefix; reset
+  is required. There is no silent numerical or allocation fallback: select custom
+  explicitly after an actionable MPS error. Framework-internal allocations and
+  execution behavior remain opaque.
+* Custom kernels use FP32 safe/precise Metal math, contraction disabled, compensated per-lane
   projection accumulation and a SIMDgroup reduction. RMSNorm epsilon is 1e-5.
   YaRN is independently implemented from the pinned checkpoint formula, with
   theta 1e6, factor 16, original context 16384 and beta 32/1. Split-half rotation
@@ -62,7 +84,7 @@ support. The larger checkpoint position limit is not a supported context claim.
 
 ## API and ownership
 
-`include/metal.h` contains only C types: opaque create/destroy/reset/prefill/decode.
+`include/metal.h` contains only C types: opaque create/create_with_options/destroy/reset/prefill/decode.
 A context owns an ARC Objective-C owner through an explicitly retained C wrapper.
 Destroy transfers that reference back to ARC, releasing weights, scratch, KV,
 queue and pipelines. Shard files are closed after uploads, including on failure.
@@ -82,6 +104,7 @@ directory is required. The resulting binary can be moved elsewhere.
 
 Implementation modules: `metal_weights.c` stages reader/model-facts validation;
 `metal_yarn.c` computes positions; `metal_encode.m` encodes transformer work;
+`metal_mps.m` prepares the bounded MPS view/kernel cache;
 `metal_runtime.m` owns resources and sequence publication;
 `metal_kernels.metal` holds the fixed FP32 kernels. Apple headers remain private.
 
@@ -89,7 +112,8 @@ Implementation modules: `metal_weights.c` stages reader/model-facts validation;
 
 `make test` remains offline/model-free/Python-free, including synthetic complete
 metadata preflight. `make METAL=1 BUILD=build/metal test` additionally runs
-small deterministic GPU projection tails, RMSNorm, element, attention and YaRN
+small deterministic GPU MPS short/long-K awkward shapes against independent double sums,
+current-shape cache replacement and allocation-failure checks, custom projection tails, RMSNorm, element, attention and YaRN
 rotation comparisons, state rejection/reset checks, every encoder's nil path,
 and simulated command/nonfinite failures. These do **not** establish full-model
 correctness or actual device-fault recovery. Test checks remain active under
@@ -102,6 +126,7 @@ make METAL=1 BUILD=build/metal build/metal/compare_metal
 build/metal/compare_metal --self-test
 build/metal/compare_metal models/shard1.safetensors models/shard2.safetensors \
   fixtures/prompt.ids fixtures/generation.safetensors
+# Repeat with a trailing --metal-prefill=custom to validate the custom path.
 ```
 
 `prompt.ids` is whitespace-separated decimal IDs (1..256 tokens).

@@ -52,6 +52,9 @@ int lunelette_metal_encode_operator(LuneletteMetalOwner *owner, id<MTLCommandBuf
 static int project(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command,
     size_t weight, int input, int output, uint32_t rows, uint32_t cols, size_t count)
 {
+    if (count > 1 && owner->prefill_mode == LUNELETTE_METAL_PREFILL_MPS) {
+        return lunelette_metal_mps_project(owner, command, weight);
+    }
     return lunelette_metal_encode_operator(owner, command, METAL_PROJECT, owner->weights[weight],
         owner->buffers[input], owner->buffers[output], rows, cols, (uint32_t)count,
         count, 0);

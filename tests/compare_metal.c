@@ -235,13 +235,19 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--self-test") == 0) {
         return self_test();
     }
+    lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
+    if (argc > 1 && strcmp(argv[argc - 1], "--metal-prefill=custom") == 0) {
+        options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
+        argc--;
+    }
     if (argc < 5 || (argc - 3) % 2 != 0) {
-        fputs("usage: compare_metal SHARD1 SHARD2 IDS_FILE FIXTURE [IDS_FILE FIXTURE ...]\n", stderr);
+        fputs("usage: compare_metal SHARD1 SHARD2 IDS_FILE FIXTURE [IDS_FILE FIXTURE ...] [--metal-prefill=custom]\n", stderr);
         return 1;
     }
     char error[512];
     double start = seconds();
-    lunelette_metal *runtime = lunelette_metal_create(argv[1], argv[2], error, sizeof error);
+    lunelette_metal *runtime = lunelette_metal_create_with_options(argv[1], argv[2],
+        &options, error, sizeof error);
     if (!runtime) {
         fprintf(stderr, "%s\n", error);
         return 1;
@@ -271,7 +277,8 @@ int main(int argc, char **argv)
         runtime = NULL;
         for (size_t attempt = 0; attempt < 3; attempt++) {
             sleep(1);
-            runtime = lunelette_metal_create(argv[2], argv[1], error, sizeof error);
+            runtime = lunelette_metal_create_with_options(argv[2], argv[1],
+                &options, error, sizeof error);
             if (runtime || !strstr(error, "Metal needs conservative")) {
                 break;
             }

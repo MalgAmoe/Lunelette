@@ -138,12 +138,12 @@ ifneq ($(shell uname -s),Darwin)
 $(error METAL=1 requires macOS and Apple Silicon; omit METAL=1 for portable CPU)
 endif
 METAL_C_SOURCES = src/metal_weights.c src/metal_yarn.c
-METAL_OBJC_SOURCES = src/metal_runtime.m src/metal_encode.m
+METAL_OBJC_SOURCES = src/metal_runtime.m src/metal_encode.m src/metal_mps.m
 METAL_OBJECTS = $(patsubst src/%.c,$(BUILD)/%.o,$(METAL_C_SOURCES)) $(patsubst src/%.m,$(BUILD)/%.o,$(METAL_OBJC_SOURCES))
-METAL_HEADERS = include/metal.h src/metal_internal.h src/metal_weights.h $(MODEL_HEADERS)
+METAL_HEADERS = include/metal.h src/metal_internal.h src/metal_mps.h src/metal_weights.h $(MODEL_HEADERS)
 METAL_CPPFLAGS = -DLUNELETTE_USE_METAL
 METAL_TARGET = -mmacosx-version-min=15.0
-METAL_LIBS = -framework Foundation -framework Metal
+METAL_LIBS = -framework Foundation -framework Metal -framework MetalPerformanceShaders
 METAL_FLAGS = -fobjc-arc -fno-objc-exceptions -ffp-contract=off -mmacosx-version-min=15.0
 
 $(BUILD)/embed_shader: tools/embed_shader.c | $(BUILD)

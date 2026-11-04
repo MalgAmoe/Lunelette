@@ -15,6 +15,24 @@ typedef struct lunelette_metal lunelette_metal;
  * NULL on failure; diagnostic written when error/capacity permit. */
 lunelette_metal *lunelette_metal_create(const char *first, const char *second,
     char *error, size_t capacity);
+typedef enum {
+    LUNELETTE_METAL_PREFILL_MPS = 0,
+    LUNELETTE_METAL_PREFILL_CUSTOM = 1
+} lunelette_metal_prefill_mode;
+
+typedef struct {
+    lunelette_metal_prefill_mode prefill;
+} lunelette_metal_options;
+
+#define LUNELETTE_METAL_OPTIONS_DEFAULT { LUNELETTE_METAL_PREFILL_MPS }
+
+/* NULL options selects defaults. Invalid enum values fail before opening shards.
+ * create() is equivalent to create_with_options(..., NULL, ...).
+ * MPS is the default for multi-token block projections; decode/head stay precise.
+ * MPS uses FP32 storage, but internal accumulation precision is unspecified.
+ * CUSTOM retains the precise FP32 custom arithmetic for all projections. */
+lunelette_metal *lunelette_metal_create_with_options(const char *first, const char *second,
+    const lunelette_metal_options *options, char *error, size_t capacity);
 void lunelette_metal_destroy(lunelette_metal *context);
 
 /* Reset makes old cache tails inaccessible; no GPU work or weight reload. */
