@@ -129,7 +129,7 @@ $(BUILD)/backend.config: | $(BUILD)
 	@printf '%s\n' '$(BACKEND_CONFIG)' > $@.tmp
 	@mv $@.tmp $@
 
-$(BUILD)/lunelette: $(BUILD)/backend.config $(CLI_SOURCES) $(CLI_HEADERS) | $(BUILD)
+$(BUILD)/lunelette: $(BUILD)/backend.config $(CLI_SOURCES) $(CLI_HEADERS) src/metal_weights.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(METAL_CPPFLAGS) $(METAL_TARGET) $(CLI_SOURCES) $(METAL_OBJECTS) -o $@ $(LDLIBS) $(METAL_LIBS)
 
 # Metal is opt-in. The portable C11 targets never see Apple headers/frameworks.
@@ -140,13 +140,13 @@ endif
 METAL_C_SOURCES = src/metal_weights.c src/metal_yarn.c
 METAL_OBJC_SOURCES = src/metal_runtime.m src/metal_encode.m src/metal_mps.m
 METAL_OBJECTS = $(patsubst src/%.c,$(BUILD)/%.o,$(METAL_C_SOURCES)) $(patsubst src/%.m,$(BUILD)/%.o,$(METAL_OBJC_SOURCES))
-METAL_HEADERS = include/metal.h src/metal_internal.h src/metal_mps.h src/metal_weights.h $(MODEL_HEADERS)
+METAL_HEADERS = include/safetensors.h include/metal.h src/metal_internal.h src/metal_mps.h src/metal_weights.h $(MODEL_HEADERS)
 METAL_CPPFLAGS = -DLUNELETTE_USE_METAL
 METAL_TARGET = -mmacosx-version-min=15.0
 METAL_LIBS = -framework Foundation -framework Metal -framework MetalPerformanceShaders
 METAL_FLAGS = -fobjc-arc -fno-objc-exceptions -ffp-contract=off -mmacosx-version-min=15.0
 
-$(BUILD)/embed_shader: tools/embed_shader.c | $(BUILD)
+$(BUILD)/embed_shader: tools/embed_shader.c include/model_facts.h | $(BUILD)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic $< -o $@
 
 $(BUILD)/metal_shader.h: src/metal_kernels.metal $(BUILD)/embed_shader
@@ -175,11 +175,27 @@ $(BUILD)/compare_metal: tests/compare_metal.c $(METAL_OBJECTS) $(METAL_HEADERS) 
 endif
 
 # Metadata preflight is portable and model-free even when Metal is not enabled.
-$(BUILD)/test_metal_weights: tests/test_metal_weights.c src/metal_weights.c src/metal_weights.h src/model_facts.c include/model_facts.h src/safetensors.c include/safetensors.h | $(BUILD)
-	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) tests/test_metal_weights.c src/metal_weights.c src/model_facts.c src/safetensors.c -o $@ $(LDLIBS)
+$(BUILD)/test_metal_weights: tests/test_metal_weights.c src/cpu_weights.c src/cpu_weights.h src/metal_weights.c src/metal_weights.h src/model_facts.c include/model_facts.h src/safetensors.c include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) tests/test_metal_weights.c src/cpu_weights.c src/metal_weights.c src/model_facts.c src/safetensors.c -o $@ $(LDLIBS)
 
 .PHONY: metal-weights-test
 metal-weights-test: $(BUILD)/test_metal_weights
-	./$(BUILD)/test_metal_weights
+	./$(BUILD)/test_metal_weights $(BUILD)/test-metal-duplicates.tmp
 
 test: metal-weights-test
+
+$(BUILD)/test_metal_zero_work: tests/test_metal_zero_work.c src/main.c src/metal_weights.h include/metal.h include/chat.h $(TOKENIZER_HEADERS) $(GENERATION_HEADERS) $(GENERATION_SOURCES) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) tests/test_metal_zero_work.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+
+test: zero-work-test
+.PHONY: zero-work-test shader-facts-test
+zero-work-test: $(BUILD)/test_metal_zero_work
+	./$(BUILD)/test_metal_zero_work
+
+# Optional isolated altered-facts check; Python is not required by make test.
+shader-facts-test:
+	CC='$(CC)' python3 tests/test_shader_facts.py
+
+.PHONY: dependency-test
+dependency-test:
+	sh tests/test_dependencies.sh

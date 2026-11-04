@@ -53,36 +53,8 @@ int lunelette_forward(st_file *shard1, st_file *shard2, const int64_t *ids, size
             memcpy(checkpoint, state, elements * sizeof(float));
         }
     }
-    st_file *owner = NULL;
-    const st_tensor *norm = lunelette_require(files, 2, "language_model.model.norm.weight",
-                                             LUNELETTE_MODEL_HIDDEN, 0, &owner, error, capacity);
-    if (!norm || st_load_bf16(owner, norm, norm_weight, LUNELETTE_MODEL_HIDDEN)) {
-        if (error && capacity) {
-            snprintf(error, capacity, "language_model.model.norm.weight: read failed");
-        }
+    if (lunelette_cpu_tail(files, count, state, scores, norm_weight, row, error, capacity)) {
         goto done;
-    }
-    for (size_t t = 0; t < count; t++) {
-        lunelette_hidden_norm(state + t * LUNELETTE_MODEL_HIDDEN, norm_weight,
-                              state + t * LUNELETTE_MODEL_HIDDEN);
-    }
-    const st_tensor *embedding = lunelette_require(files, 2,
-        "language_model.model.embed_tokens.weight", LUNELETTE_MODEL_VOCAB,
-        LUNELETTE_MODEL_HIDDEN, &owner, error, capacity);
-    if (!embedding) {
-        goto done;
-    }
-    /* Tied output head: expand one BF16 vocabulary row, never the 1.5 GiB
-     * embedding matrix. The same scalar reduction as all layer projections. */
-    for (size_t token = 0; token < LUNELETTE_MODEL_VOCAB; token++) {
-        if (st_embedding(owner, embedding, (int64_t)token, row, LUNELETTE_MODEL_HIDDEN)) {
-            if (error && capacity) {
-                snprintf(error, capacity, "tied logits: embedding row %zu read failed", token);
-            }
-            goto done;
-        }
-        lunelette_matvec(row, state + (count - 1) * LUNELETTE_MODEL_HIDDEN,
-                         scores + token, 1, LUNELETTE_MODEL_HIDDEN);
     }
     memcpy(hidden, state, elements * sizeof(float));
     memcpy(logits, scores, LUNELETTE_MODEL_VOCAB * sizeof(float));

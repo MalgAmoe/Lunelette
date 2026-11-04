@@ -7,7 +7,7 @@ reject() {
         exit 1
     fi
 }
-trap 'rm -f cli-test.out cli-test.err' EXIT HUP INT TERM
+trap 'rm -f cli-test.out cli-test.err test_tokenizer_fixture.tmp' EXIT HUP INT TERM
 "$cli" --help >/dev/null
 "$cli" --version >/dev/null
 reject
@@ -48,3 +48,15 @@ reject --tokenizer missing --prompt x --weights a
 reject --help --invalid
 reject --version --invalid
 echo 'CLI parser tests passed'
+# POSIX read-only stdout: no /dev/full dependency, pipe race or SIGPIPE.
+if test -c /dev/null; then
+    for option in --help --version; do
+        if "$cli" "$option" 1< /dev/null 2>cli-test.err; then exit 1; fi
+        grep 'Writing .* stdout failed' cli-test.err >/dev/null
+    done
+    ./test_tokenizer --cli-fixture
+    if "$cli" --tokenizer test_tokenizer_fixture.tmp --prompt a --raw \
+        --dump-prompt-ids 1< /dev/null 2>cli-test.err; then exit 1; fi
+    rm test_tokenizer_fixture.tmp
+    grep 'Writing prompt IDs to stdout failed' cli-test.err >/dev/null
+fi

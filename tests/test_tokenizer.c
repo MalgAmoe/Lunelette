@@ -324,6 +324,10 @@ static void oracle_tests(lunelette_tokenizer *t, const char *path)
 
 int main(int argc, char **argv)
 {
+    if (argc == 2 && strcmp(argv[1], "--cli-fixture") == 0) {
+        synthetic_file(0);
+        return 0;
+    }
     CHECK(argc == 1 || argc == 3);
     parser_tests();
     lunelette_tokenizer *t = NULL;

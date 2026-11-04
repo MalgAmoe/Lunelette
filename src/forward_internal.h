@@ -21,4 +21,11 @@ int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
 int lunelette_offset_gqa(const float *query, const float *key, const float *value,
     float *output, float *scratch, size_t tokens, size_t query_heads,
     size_t kv_heads, size_t head_dim, size_t offset);
+/* Final norm (all rows) and tied logits (last row), with the existing scalar math.
+ * Requires two validated shards, 1..context-limit rows and caller-owned scratch:
+ * norm_weight/row each MODEL_HIDDEN floats, scores MODEL_VOCAB floats.
+ * State and scores may be partially modified on error; callers own publication
+ * and cache/checkpoint commits. Scratch lifetime remains with each caller. */
+int lunelette_cpu_tail(st_file **files, size_t count, float *state, float *scores,
+    float *norm_weight, float *row, char *error, size_t capacity);
 #endif

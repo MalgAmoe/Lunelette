@@ -97,6 +97,42 @@ int main(void)
         free(scores);
         lunelette_cache_free(cache);
     }
+    /* Shared sparse zero storage lets every layer succeed, then fails in each
+     * final-tail read path. Public logits and prefix publication stay atomic;
+     * retrying without reset must still be permitted after a failed prefill. */
+    const size_t storage_bytes = 9216 * 3072 * 2;
+    CHECK(fseek(first.file, (long)(storage_bytes - 1), SEEK_SET) == 0);
+    CHECK(fputc(0, first.file) == 0);
+    CHECK(fflush(first.file) == 0);
+    for (size_t i = 0; i < 236; i++) {
+        tensors[i].end = tensors[i].shape[0] *
+            (tensors[i].rank == 2 ? tensors[i].shape[1] : 1) * 2;
+    }
+    lunelette_cache *tail_cache = lunelette_cache_init(&first, &second, 2,
+                                                      error, sizeof error);
+    CHECK(tail_cache);
+    float *tail_scores = malloc(131072 * sizeof(float));
+    CHECK(tail_scores);
+    for (size_t i = 0; i < 131072; i++) {
+        tail_scores[i] = 123.0f;
+    }
+    for (size_t attempt = 0; attempt < 3; attempt++) {
+        /* First fail the final norm; subsequent calls reach tied row I/O. */
+        tensors[1].begin = attempt == 0 ? storage_bytes : 0;
+        tensors[1].end = tensors[1].begin + 3072 * 2;
+        CHECK(lunelette_cache_forward(tail_cache, &id, 1, tail_scores,
+                                      error, sizeof error) == -1);
+        CHECK(strstr(error, attempt == 0 ? "model.norm.weight: read failed" :
+                                         "tied logits: embedding row"));
+        CHECK(lunelette_cache_length(tail_cache) == 0);
+        for (size_t i = 0; i < 131072; i++) {
+            CHECK(tail_scores[i] == 123.0f);
+        }
+    }
+    lunelette_cache_reset(tail_cache);
+    CHECK(lunelette_cache_length(tail_cache) == 0);
+    lunelette_cache_free(tail_cache);
+    free(tail_scores);
     second.count = 1;
     second.tensors = tensors;
     CHECK(!lunelette_cache_init(&first, &second, 256, error, sizeof error));

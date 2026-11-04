@@ -3,14 +3,15 @@
 #include "cache.h"
 #ifdef LUNELETTE_USE_METAL
 #include "metal.h"
+#include "metal_weights.h"
 #endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-static void usage(void)
+static int usage(void)
 {
-    puts("Usage: lunelette --tokenizer TEKKEN --prompt TEXT [--system TEXT] [--raw]\n"
+    return puts("Usage: lunelette --tokenizer TEKKEN --prompt TEXT [--system TEXT] [--raw]\n"
          "       [--weights SHARD1 --weights2 SHARD2] [--max-new-tokens N]\n"
          "       [--backend cpu|metal] [--metal-prefill mps|custom] [--uncached]\n"
          "       [--dump-prompt-ids] [--dump-output-ids]\n"
@@ -71,12 +72,24 @@ static int metal_next(void *context, const int64_t *ids, size_t count,
 int main(int argc, char **argv)
 {
     if (argc == 2 && strcmp(argv[1], "--version") == 0) {
-        puts("Lunelette " LUNELETTE_VERSION);
-        return 0;
+        int failed = puts("Lunelette " LUNELETTE_VERSION) == EOF;
+        if (fflush(stdout) == EOF || ferror(stdout)) {
+            failed = 1;
+        }
+        if (failed) {
+            fputs("Writing version to stdout failed; check output destination\n", stderr);
+        }
+        return failed;
     }
     if (argc == 2 && strcmp(argv[1], "--help") == 0) {
-        usage();
-        return 0;
+        int failed = usage() == EOF;
+        if (fflush(stdout) == EOF || ferror(stdout)) {
+            failed = 1;
+        }
+        if (failed) {
+            fputs("Writing help to stdout failed; check output destination\n", stderr);
+        }
+        return failed;
     }
     const char *weights = NULL, *weights2 = NULL, *path = NULL;
     const char *prompt = NULL, *system = NULL;
@@ -173,12 +186,33 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < count; i++) {
             printf("%s%lld", i ? " " : "", (long long)ids[i]);
         }
-        status = puts("") == EOF || ferror(stdout) ? 1 : 0;
+        int failed = puts("") == EOF;
+        if (fflush(stdout) == EOF || ferror(stdout)) {
+            failed = 1;
+        }
+        status = failed ? 1 : 0;
+        if (failed) {
+            snprintf(error, sizeof error, "Writing prompt IDs to stdout failed; check output destination");
+        }
         goto cleanup;
     }
     lunelette_generation_result result;
 #ifdef LUNELETTE_USE_METAL
-    if (use_metal) {
+    if (use_metal && (!config.max_new_tokens || count == LUNELETTE_CONTEXT_LIMIT)) {
+        /* Keep full checkpoint validation, but do not create a GPU context for
+         * a request that cannot execute even one logits step. */
+        lunelette_metal_weights metadata;
+        if (lunelette_metal_weights_open(&metadata, weights, weights2,
+                error, sizeof error) != 0) {
+            goto cleanup;
+        }
+        lunelette_metal_weights_close(&metadata);
+        metal_generation generation = {NULL, 0};
+        if (lunelette_generate_with_logits(metal_next, &generation, ids, count,
+                &config, &result, error, sizeof error) != 0) {
+            goto cleanup;
+        }
+    } else if (use_metal) {
         lunelette_metal_options metal_options = LUNELETTE_METAL_OPTIONS_DEFAULT;
         if (metal_prefill && strcmp(metal_prefill, "custom") == 0) {
             metal_options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
@@ -234,7 +268,15 @@ int main(int argc, char **argv)
         for (size_t i = 0; i < result.count; i++) {
             fprintf(stderr, " %lld", (long long)result.tokens[i]);
         }
-        fputc('\n', stderr);
+        int failed = fputc('\n', stderr) == EOF;
+        if (fflush(stderr) == EOF || ferror(stderr)) {
+            failed = 1;
+        }
+        if (failed) {
+            snprintf(error, sizeof error,
+                "Writing generated IDs to stderr failed; check diagnostic destination");
+            goto cleanup;
+        }
     }
     if (fwrite(bytes, 1, length, stdout) != length || fflush(stdout) == EOF) {
         snprintf(error, sizeof error, "Writing generated text failed");

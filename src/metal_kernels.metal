@@ -36,7 +36,7 @@ kernel void norm(device const float *weights [[buffer(0)]],
         float value = input[token * dims.x + column];
         sum += value * value;
     }
-    float scale = rsqrt(simd_sum(sum) / float(dims.x) + 1e-5f);
+    float scale = rsqrt(simd_sum(sum) / float(dims.x) + LUNELETTE_MODEL_NORM_EPS);
     for (uint column = lane; column < dims.x; column += width) {
         output[token * dims.x + column] = weights[column] *
             (input[token * dims.x + column] * scale);
@@ -71,7 +71,8 @@ kernel void rope(device const float *input [[buffer(0)]],
         rotated * sine[token * 128 + column];
     if (dims.z) {
         // Integer context block count is the checkpoint's query scaling rule.
-        value *= 1.0f + 0.1f * log(1.0f + float(positions[token] / 16384));
+        value *= 1.0f + LUNELETTE_MODEL_QUERY_SCALE *
+            log(1.0f + float(positions[token] / LUNELETTE_MODEL_ORIGINAL_CONTEXT));
     }
     output[index] = value;
 }
