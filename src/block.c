@@ -8,10 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define HIDDEN 3072
-#define QUERY 4096
-#define KV 1024
-#define INNER 9216
+#define HIDDEN LUNELETTE_MODEL_HIDDEN
+#define QUERY LUNELETTE_MODEL_QUERY
+#define KV LUNELETTE_MODEL_KV
+#define INNER LUNELETTE_MODEL_INNER
 
 /* FP32 products/output with a wider sum prevent thousands of positive squares
  * losing low bits at every addition. Across 26 layers that norm error compounds.
@@ -25,42 +25,10 @@ void lunelette_hidden_norm(const float *input, const float *weight, float *outpu
         sum += square;
     }
     float mean = (float)(sum / HIDDEN);
-    float scale = 1.0f / sqrtf(mean + 1e-5f);
+    float scale = 1.0f / sqrtf(mean + LUNELETTE_MODEL_NORM_EPS);
     for (size_t i = 0; i < HIDDEN; i++) {
         output[i] = (input[i] * scale) * weight[i];
     }
-}
-
-const st_tensor *lunelette_require(st_file **files, size_t nfiles, const char *name,
-                                  size_t rows, size_t cols, st_file **owner,
-                                  char *error, size_t capacity)
-{
-    const st_tensor *found = NULL;
-    for (size_t f = 0; f < nfiles; f++) {
-        for (size_t i = 0; i < files[f]->count; i++) {
-            const st_tensor *tensor = &files[f]->tensors[i];
-            if (strcmp(tensor->name, name)) {
-                continue;
-            }
-            if (found) {
-                if (error && capacity) {
-                    snprintf(error, capacity, "%s: duplicate tensor across supplied shards", name);
-                }
-                return NULL;
-            }
-            found = tensor;
-            *owner = files[f];
-        }
-    }
-    if (!found || found->dtype != ST_BF16 || found->rank != (cols ? 2u : 1u) ||
-        found->shape[0] != rows || (cols && found->shape[1] != cols)) {
-        if (error && capacity) {
-            snprintf(error, capacity, "%s: expected BF16 %zu rows, %zu columns (0=vector)",
-                     name, rows, cols);
-        }
-        return NULL;
-    }
-    return found;
 }
 
 static int project(st_file **files, size_t nfiles, const char *name, size_t rows, size_t cols,
@@ -95,19 +63,16 @@ int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
 {
     int result = -1;
     float *workspace = NULL, *matrix = NULL;
-    char names[9][128];
-    const char *suffixes[] = {
-        "input_layernorm.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
-        "self_attn.v_proj.weight", "self_attn.o_proj.weight", "post_attention_layernorm.weight",
-        "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"
-    };
-    if (!input || !output || !count || count > 256 || layer >= 26 ||
-        offset > 256 - count || (!!cached_key != !!cached_value) ||
+    char names[LUNELETTE_MODEL_BLOCK_WEIGHTS][128];
+    if (!input || !output || !count || count > LUNELETTE_CONTEXT_LIMIT ||
+        layer >= LUNELETTE_MODEL_LAYERS ||
+        offset > LUNELETTE_CONTEXT_LIMIT - count || (!!cached_key != !!cached_value) ||
         (offset && !cached_key)) {
         return -1;
     }
-    for (size_t i = 0; i < 9; i++) {
-        snprintf(names[i], sizeof names[i], "language_model.model.layers.%zu.%s", layer, suffixes[i]);
+    for (size_t i = 0; i < LUNELETTE_MODEL_BLOCK_WEIGHTS; i++) {
+        snprintf(names[i], sizeof names[i], "language_model.model.layers.%zu.%s", layer,
+                 lunelette_model_block_weights[i].suffix);
     }
     st_file *owner = NULL;
     const st_tensor *norm = lunelette_require(files, nfiles, names[0], HIDDEN, 0,
@@ -135,8 +100,8 @@ int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
     float *attention = v + count * KV;
     float *gate = attention + count * QUERY;
     float *up = gate + count * INNER;
-    float norm_weight[HIDDEN], scratch[256];
-    uint32_t positions[256];
+    float norm_weight[HIDDEN], scratch[LUNELETTE_CONTEXT_LIMIT];
+    uint32_t positions[LUNELETTE_CONTEXT_LIMIT];
     if (error && capacity) {
         snprintf(error, capacity, "%s: read failed", names[0]);
     }
@@ -165,7 +130,8 @@ int lunelette_layer_cached(st_file **files, size_t nfiles, size_t layer,
     }
     if (lunelette_offset_gqa(q, cached_key ? cached_key : k,
                             cached_value ? cached_value : v, attention, scratch,
-                            count, 32, 8, 128, offset)) {
+                            count, LUNELETTE_MODEL_QUERY_HEADS, LUNELETTE_MODEL_KV_HEADS,
+                            LUNELETTE_MODEL_HEAD_DIM, offset)) {
         if (error && capacity) {
             snprintf(error, capacity, "layer %zu: YaRN/causal GQA failed", layer);
         }
@@ -223,7 +189,8 @@ int lunelette_first_block(st_file *shard, const int64_t *ids, size_t count,
     if (error && capacity) {
         snprintf(error, capacity, "first block: invalid arguments");
     }
-    if (!shard || !shard->file || !ids || !output || !count || count > 256) {
+    if (!shard || !shard->file || !ids || !output || !count ||
+        count > LUNELETTE_CONTEXT_LIMIT) {
         return -1;
     }
     st_file *files[] = {shard};
@@ -246,7 +213,7 @@ int lunelette_embed(st_file **files, size_t nfiles, const int64_t *ids, size_t c
                      float *hidden, char *error, size_t capacity)
 {
     for (size_t t = 0; t < count; t++) {
-        if (ids[t] < 0 || ids[t] >= 131072) {
+        if (ids[t] < 0 || ids[t] >= LUNELETTE_MODEL_VOCAB) {
             if (error && capacity) {
                 snprintf(error, capacity, "embedding: invalid token %lld at row %zu",
                          (long long)ids[t], t);
@@ -256,7 +223,7 @@ int lunelette_embed(st_file **files, size_t nfiles, const int64_t *ids, size_t c
     }
     st_file *owner = NULL;
     const st_tensor *embedding = lunelette_require(files, nfiles,
-        "language_model.model.embed_tokens.weight", 131072, HIDDEN, &owner, error, capacity);
+        "language_model.model.embed_tokens.weight", LUNELETTE_MODEL_VOCAB, HIDDEN, &owner, error, capacity);
     if (!embedding) {
         return -1;
     }

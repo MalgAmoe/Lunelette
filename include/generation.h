@@ -3,8 +3,10 @@
 
 #include "forward.h"
 
-#define LUNELETTE_CONTEXT_LIMIT 256
-#define LUNELETTE_VOCAB_SIZE 131072
+#include "model_facts.h"
+#include "runtime_limits.h"
+
+#define LUNELETTE_VOCAB_SIZE LUNELETTE_MODEL_VOCAB
 
 typedef struct {
     size_t max_new_tokens; /* 0..256 */

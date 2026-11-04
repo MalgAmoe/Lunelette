@@ -3,6 +3,7 @@
 
 #include "safetensors.h"
 
+/* CPU/reference-specific API, not a universal backend interface. */
 /* Fixed Ministral-3-3B-Instruct-2512 text layout only: 26 layers, hidden 3072,
  * vocabulary 131072, epsilon 1e-5, tied embeddings. FP32 sequential projection/attention reductions; RMSNorm
  * uses FP32 squares, a double sum, then FP32 mean/scale/output.

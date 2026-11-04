@@ -37,7 +37,7 @@ int main(void)
     CHECK(norm_output[3071] == scale);
     lunelette_hidden_norm(norm_input, norm_weight, norm_input);
     CHECK(memcmp(norm_input, norm_output, sizeof norm_input) == 0);
-    st_tensor tensors[236];
+    st_tensor tensors[238];
     descriptor(tensors, "language_model.model.embed_tokens.weight", 131072, 3072);
     descriptor(tensors + 1, "language_model.model.norm.weight", 3072, 0);
     const char *suffix[] = {
@@ -62,6 +62,35 @@ int main(void)
     first.tensors = tensors;
     second.count = 116;
     second.tensors = tensors + 120;
+    /* Independent literal fixtures above pin the checkpoint contract rather than
+     * manufacturing expected shapes from the descriptor being tested. */
+    CHECK(LUNELETTE_MODEL_HIDDEN == 3072 && LUNELETTE_MODEL_LAYERS == 26);
+    CHECK(LUNELETTE_MODEL_VOCAB == 131072 && LUNELETTE_MODEL_INNER == 9216);
+    CHECK(LUNELETTE_MODEL_QUERY == LUNELETTE_MODEL_QUERY_HEADS * LUNELETTE_MODEL_HEAD_DIM);
+    CHECK(LUNELETTE_MODEL_KV == LUNELETTE_MODEL_KV_HEADS * LUNELETTE_MODEL_HEAD_DIM);
+    CHECK(LUNELETTE_MODEL_QUERY_HEADS == 32 && LUNELETTE_MODEL_KV_HEADS == 8);
+    CHECK(LUNELETTE_MODEL_HEAD_DIM == 128 && LUNELETTE_MODEL_TIED_EMBEDDINGS == 1);
+    CHECK(LUNELETTE_MODEL_NORM_EPS == 1e-5f);
+    CHECK(LUNELETTE_CONTEXT_LIMIT == 256 && LUNELETTE_MODEL_MAX_POSITION == 262144);
+    CHECK(LUNELETTE_CONTEXT_LIMIT < LUNELETTE_MODEL_MAX_POSITION);
+    for (size_t i = 0; i < 9; i++) {
+        CHECK(strcmp(lunelette_model_block_weights[i].suffix, suffix[i]) == 0);
+        CHECK(lunelette_model_block_weights[i].rows == rows[i]);
+        CHECK(lunelette_model_block_weights[i].cols == cols[i]);
+    }
+    st_file *layout_files[] = {&first, &second};
+    char layout_error[512];
+    CHECK(lunelette_cpu_validate_layout(layout_files, layout_error, sizeof layout_error) == 0);
+    /* Even malformed/duplicate unrelated vision metadata is outside this text contract. */
+    descriptor(tensors + 236, "vision_tower.ignored.weight", 7, 3);
+    tensors[236].dtype = ST_F32;
+    tensors[237] = tensors[236];
+    second.count += 2;
+    CHECK(lunelette_cpu_validate_layout(layout_files, layout_error, sizeof layout_error) == 0);
+    tensors[237] = tensors[0];
+    CHECK(lunelette_cpu_validate_layout(layout_files, layout_error, sizeof layout_error) == -1);
+    CHECK(strstr(layout_error, "duplicate"));
+    second.count -= 2;
     int64_t ids[256] = {0};
     static float hidden[256 * 3072], logits[131072], checkpoint[256 * 3072];
     for (size_t i = 0; i < 256 * 3072; i++) {

@@ -10,36 +10,6 @@ struct lunelette_cache {
     float *kv;
 };
 
-/* Validate the whole supported text layout before expensive execution, including
- * duplicate names. Unrelated vision tensors are deliberately ignored. */
-static int validate(st_file **files, char *error, size_t capacity)
-{
-    const char *suffix[] = {
-        "input_layernorm.weight", "self_attn.q_proj.weight", "self_attn.k_proj.weight",
-        "self_attn.v_proj.weight", "self_attn.o_proj.weight", "post_attention_layernorm.weight",
-        "mlp.gate_proj.weight", "mlp.up_proj.weight", "mlp.down_proj.weight"
-    };
-    const size_t rows[] = {3072, 4096, 1024, 1024, 3072, 3072, 9216, 9216, 3072};
-    const size_t cols[] = {0, 3072, 3072, 3072, 4096, 0, 3072, 3072, 9216};
-    st_file *owner = NULL;
-    if (!lunelette_require(files, 2, "language_model.model.embed_tokens.weight",
-                           131072, 3072, &owner, error, capacity) ||
-        !lunelette_require(files, 2, "language_model.model.norm.weight",
-                           3072, 0, &owner, error, capacity)) {
-        return -1;
-    }
-    for (size_t layer = 0; layer < 26; layer++) {
-        for (size_t i = 0; i < 9; i++) {
-            char name[128];
-            snprintf(name, sizeof name, "language_model.model.layers.%zu.%s", layer, suffix[i]);
-            if (!lunelette_require(files, 2, name, rows[i], cols[i], &owner, error, capacity)) {
-                return -1;
-            }
-        }
-    }
-    return 0;
-}
-
 int lunelette_cache_forward(lunelette_cache *cache, const int64_t *ids, size_t count,
                        float *logits,
                        char *error, size_t capacity)
@@ -56,7 +26,7 @@ int lunelette_cache_forward(lunelette_cache *cache, const int64_t *ids, size_t c
         return -1;
     }
     for (size_t t = 0; t < count; t++) {
-        if (ids[t] < 0 || ids[t] >= 131072) {
+        if (ids[t] < 0 || ids[t] >= LUNELETTE_MODEL_VOCAB) {
             if (error && capacity) {
                 snprintf(error, capacity, "cache: invalid token %lld at row %zu",
                          (long long)ids[t], t);
@@ -65,14 +35,14 @@ int lunelette_cache_forward(lunelette_cache *cache, const int64_t *ids, size_t c
         }
     }
     st_file *files[] = {shard1, shard2};
-    if (validate(files, error, capacity)) {
+    if (lunelette_cpu_validate_layout(files, error, capacity)) {
         return -1;
     }
     int result = -1;
-    size_t elements = count * 3072;
+    size_t elements = count * LUNELETTE_MODEL_HIDDEN;
     float *state = malloc(elements * sizeof(float));
-    float *scores = malloc(131072 * sizeof(float));
-    float norm_weight[3072], row[3072];
+    float *scores = malloc(LUNELETTE_MODEL_VOCAB * sizeof(float));
+    float norm_weight[LUNELETTE_MODEL_HIDDEN], row[LUNELETTE_MODEL_HIDDEN];
     if (!state || !scores) {
         if (error && capacity) {
             snprintf(error, capacity, "cache: allocation failed");
@@ -82,42 +52,45 @@ int lunelette_cache_forward(lunelette_cache *cache, const int64_t *ids, size_t c
     if (lunelette_embed(files, 2, ids, count, state, error, capacity)) {
         goto done;
     }
-    for (size_t layer = 0; layer < 26; layer++) {
+    for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
         if (lunelette_layer_cached(files, 2, layer, state, count, state, error, capacity,
-            cache->kv + layer * 2 * cache->capacity * 1024,
-            cache->kv + (layer * 2 + 1) * cache->capacity * 1024, cache->length)) {
+            cache->kv + layer * 2 * cache->capacity * LUNELETTE_MODEL_KV,
+            cache->kv + (layer * 2 + 1) * cache->capacity * LUNELETTE_MODEL_KV, cache->length)) {
             goto done;
         }
     }
     st_file *owner = NULL;
     const st_tensor *norm = lunelette_require(files, 2, "language_model.model.norm.weight",
-                                             3072, 0, &owner, error, capacity);
-    if (!norm || st_load_bf16(owner, norm, norm_weight, 3072)) {
+                                             LUNELETTE_MODEL_HIDDEN, 0, &owner, error, capacity);
+    if (!norm || st_load_bf16(owner, norm, norm_weight, LUNELETTE_MODEL_HIDDEN)) {
         if (error && capacity) {
             snprintf(error, capacity, "language_model.model.norm.weight: read failed");
         }
         goto done;
     }
     for (size_t t = 0; t < count; t++) {
-        lunelette_hidden_norm(state + t * 3072, norm_weight, state + t * 3072);
+        lunelette_hidden_norm(state + t * LUNELETTE_MODEL_HIDDEN, norm_weight,
+                              state + t * LUNELETTE_MODEL_HIDDEN);
     }
     const st_tensor *embedding = lunelette_require(files, 2,
-        "language_model.model.embed_tokens.weight", 131072, 3072, &owner, error, capacity);
+        "language_model.model.embed_tokens.weight", LUNELETTE_MODEL_VOCAB,
+        LUNELETTE_MODEL_HIDDEN, &owner, error, capacity);
     if (!embedding) {
         goto done;
     }
     /* Tied output head: expand one BF16 vocabulary row, never the 1.5 GiB
      * embedding matrix. The same scalar reduction as all layer projections. */
-    for (size_t token = 0; token < 131072; token++) {
-        if (st_embedding(owner, embedding, (int64_t)token, row, 3072)) {
+    for (size_t token = 0; token < LUNELETTE_MODEL_VOCAB; token++) {
+        if (st_embedding(owner, embedding, (int64_t)token, row, LUNELETTE_MODEL_HIDDEN)) {
             if (error && capacity) {
                 snprintf(error, capacity, "tied logits: embedding row %zu read failed", token);
             }
             goto done;
         }
-        lunelette_matvec(row, state + (count - 1) * 3072, scores + token, 1, 3072);
+        lunelette_matvec(row, state + (count - 1) * LUNELETTE_MODEL_HIDDEN,
+                         scores + token, 1, LUNELETTE_MODEL_HIDDEN);
     }
-    memcpy(logits, scores, 131072 * sizeof(float));
+    memcpy(logits, scores, LUNELETTE_MODEL_VOCAB * sizeof(float));
     cache->length += count;
     if (error && capacity) {
         error[0] = '\0';
@@ -136,16 +109,17 @@ lunelette_cache *lunelette_cache_init(st_file *first, st_file *second,
         snprintf(error, error_capacity, "cache: require distinct open shards and capacity 1..256");
     }
     if (!first || !second || first == second || !first->file || !second->file ||
-        first->file == second->file || !token_capacity || token_capacity > 256) {
+        first->file == second->file || !token_capacity || token_capacity > LUNELETTE_CONTEXT_LIMIT) {
         return NULL;
     }
     st_file *files[] = {first, second};
-    if (validate(files, error, error_capacity)) {
+    if (lunelette_cpu_validate_layout(files, error, error_capacity)) {
         return NULL;
     }
     lunelette_cache *cache = calloc(1, sizeof *cache);
     if (cache) {
-        cache->kv = malloc(26 * 2 * token_capacity * 1024 * sizeof(float));
+        cache->kv = malloc(LUNELETTE_MODEL_LAYERS * 2 * token_capacity * LUNELETTE_MODEL_KV *
+                           sizeof(float));
         if (!cache->kv) {
             free(cache);
             cache = NULL;
@@ -201,7 +175,7 @@ int lunelette_generate_cached(lunelette_cache *cache, const int64_t *prompt,
     size_t count, const lunelette_generation_config *config,
     lunelette_generation_result *result, char *error, size_t capacity)
 {
-    if (!cache || cache->capacity != 256) {
+    if (!cache || cache->capacity != LUNELETTE_CONTEXT_LIMIT) {
         if (error && capacity) {
             snprintf(error, capacity, "cached generation: require capacity 256");
         }

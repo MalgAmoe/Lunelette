@@ -3,6 +3,7 @@
 #include "generation.h"
 
 typedef struct lunelette_cache lunelette_cache;
+/* CPU/reference-specific API, not a universal backend interface. */
 /* Single3B, batch one, explicit capacity 1..256. Borrows distinct open shards
  * until free; never close/reopen/mutate them during that lifetime. Not concurrent.
  * Returns NULL on validation/allocation failure. Stores only FP32 K/V, not weights. */

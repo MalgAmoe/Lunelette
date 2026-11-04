@@ -23,7 +23,7 @@ int lunelette_ministral3_yarn(float *query, float *key, const uint32_t *position
         return -1;
     }
     for (size_t t = 0; t < tokens; t++) {
-        if (positions[t] >= 262144) {
+        if (positions[t] >= LUNELETTE_MODEL_MAX_POSITION) {
             return -1;
         }
     }
@@ -32,18 +32,22 @@ int lunelette_ministral3_yarn(float *query, float *key, const uint32_t *position
      * Default truncate=True floors/ceils the correction range in half-dims.
      */
     const double pi = 3.14159265358979323846;
-    float low = (float)floor(128 * log(16384 / (32 * 2 * pi)) / (2 * log(1e6)));
-    float high = (float)ceil(128 * log(16384 / (2 * pi)) / (2 * log(1e6)));
+    float low = (float)floor(LUNELETTE_MODEL_HEAD_DIM *
+        log(LUNELETTE_MODEL_ORIGINAL_CONTEXT / (LUNELETTE_MODEL_YARN_BETA_FAST * 2 * pi)) /
+        (2 * log(LUNELETTE_MODEL_ROPE_THETA)));
+    float high = (float)ceil(LUNELETTE_MODEL_HEAD_DIM *
+        log(LUNELETTE_MODEL_ORIGINAL_CONTEXT / (2 * pi)) / (2 * log(LUNELETTE_MODEL_ROPE_THETA)));
     float frequencies[64];
     for (size_t i = 0; i < 64; i++) {
-        float base = powf(1000000.0f, (float)(2 * i) / 128.0f);
+        float base = powf(LUNELETTE_MODEL_ROPE_THETA_F, (float)(2 * i) / 128.0f);
         float ramp = fminf(1.0f, fmaxf(0.0f, ((float)i - low) / (high - low)));
         float extrapolation = 1.0f - ramp;
-        frequencies[i] = (1.0f / (16.0f * base)) * (1.0f - extrapolation) +
+        frequencies[i] = (1.0f / (LUNELETTE_MODEL_YARN_FACTOR * base)) * (1.0f - extrapolation) +
                          (1.0f / base) * extrapolation;
     }
     for (size_t t = 0; t < tokens; t++) {
-        float query_scale = 1.0f + 0.1f * logf(1.0f + (float)(positions[t] / 16384));
+        float query_scale = 1.0f + LUNELETTE_MODEL_QUERY_SCALE *
+            logf(1.0f + (float)(positions[t] / LUNELETTE_MODEL_ORIGINAL_CONTEXT));
         for (size_t i = 0; i < 64; i++) {
             float angle = (float)positions[t] * frequencies[i];
             float cosine = cosf(angle);

@@ -1,3 +1,6 @@
+MODEL_SOURCES = src/model_facts.c src/cpu_weights.c
+MODEL_HEADERS = include/model_facts.h include/runtime_limits.h src/cpu_weights.h
+
 CC = cc
 CPPFLAGS += -Iinclude
 CFLAGS = -std=c11 -O2 -Wall -Wextra -Wpedantic
@@ -60,33 +63,33 @@ integration: $(BUILD)/compare_embeddings
 $(BUILD)/compare_projections: tests/compare_projections.c src/safetensors.c src/math.c include/safetensors.h include/lunelette.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_projections.c src/safetensors.c src/math.c -o $@ $(LDLIBS)
 
-$(BUILD)/test_attention: tests/test_attention.c tests/rope_golden.h src/attention.c include/attention.h | $(BUILD)
+$(BUILD)/test_attention: tests/test_attention.c tests/rope_golden.h src/attention.c include/attention.h $(MODEL_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_attention.c src/attention.c -o $@ $(LDLIBS)
 
-$(BUILD)/compare_attention: tests/compare_attention.c src/attention.c src/safetensors.c include/attention.h include/safetensors.h | $(BUILD)
+$(BUILD)/compare_attention: tests/compare_attention.c src/attention.c src/safetensors.c include/attention.h $(MODEL_HEADERS) include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_attention.c src/attention.c src/safetensors.c -o $@ $(LDLIBS)
 
-$(BUILD)/compare_block: tests/compare_block.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_block.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
+$(BUILD)/compare_block: tests/compare_block.c src/block.c $(MODEL_SOURCES) src/forward_internal.h $(MODEL_HEADERS) src/attention.c src/math.c src/safetensors.c include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_block.c src/block.c $(MODEL_SOURCES) src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
 
 .PHONY: block-integration
 block-integration: $(BUILD)/compare_block
 	@test -n "$(WEIGHTS)" -a -n "$(FIXTURES)" || { echo 'Set WEIGHTS=layer0-shard FIXTURES=fixture-directory'; exit 1; }
 	./$(BUILD)/compare_block "$(WEIGHTS)" $(foreach f,short multilingual code chat longer,"$(FIXTURES)/$(f).safetensors")
 
-$(BUILD)/compare_forward: tests/compare_forward.c tests/full_depth.h src/forward.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_forward.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
+$(BUILD)/compare_forward: tests/compare_forward.c tests/full_depth.h src/forward.c src/block.c $(MODEL_SOURCES) src/forward_internal.h $(MODEL_HEADERS) src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_forward.c src/forward.c src/block.c $(MODEL_SOURCES) src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
 
 .PHONY: forward-integration
 forward-integration: $(BUILD)/compare_forward
 	@test -n "$(WEIGHTS)" -a -n "$(WEIGHTS2)" -a -n "$(FIXTURES)" || { echo 'Set WEIGHTS=shard1 WEIGHTS2=shard2 FIXTURES=fixture-directory'; exit 1; }
 	./$(BUILD)/compare_forward "$(WEIGHTS)" "$(WEIGHTS2)" $(foreach f,short multilingual code chat longer,"$(FIXTURES)/$(f).safetensors")
 
-$(BUILD)/test_forward: tests/test_forward.c src/forward.c src/block.c src/forward_internal.h src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_forward.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
+$(BUILD)/test_forward: tests/test_forward.c src/forward.c src/block.c $(MODEL_SOURCES) src/forward_internal.h $(MODEL_HEADERS) src/attention.c src/math.c src/safetensors.c include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_forward.c src/forward.c src/block.c $(MODEL_SOURCES) src/attention.c src/math.c src/safetensors.c -o $@ $(LDLIBS)
 
-GENERATION_SOURCES = src/cache.c src/generation.c src/forward.c src/block.c src/attention.c src/math.c src/safetensors.c
-GENERATION_HEADERS = include/cache.h include/generation.h include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h src/forward_internal.h
+GENERATION_SOURCES = src/cache.c src/generation.c src/forward.c src/block.c $(MODEL_SOURCES) src/attention.c src/math.c src/safetensors.c
+GENERATION_HEADERS = $(MODEL_HEADERS) include/cache.h include/generation.h include/forward.h include/block.h include/attention.h include/lunelette.h include/safetensors.h src/forward_internal.h
 
 $(BUILD)/test_generation: tests/test_generation.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_generation.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
