@@ -119,5 +119,67 @@ $(BUILD)/test_chat: tests/test_chat.c src/chat.c include/chat.h $(TOKENIZER_HEAD
 
 test: $(BUILD)/test_tokenizer $(BUILD)/test_chat
 
-$(BUILD)/lunelette: $(CLI_SOURCES) $(CLI_HEADERS) | $(BUILD)
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(CLI_SOURCES) -o $@ $(LDLIBS)
+# Compare the saved mode each invocation. Mark a changed config phony so even
+# same-timestamp switches rebuild the CLI (BSD make timestamp resolution).
+BACKEND_CONFIG = METAL=$(if $(filter 1,$(METAL)),1,0)
+ifneq ($(shell cat $(BUILD)/backend.config 2>/dev/null),$(BACKEND_CONFIG))
+.PHONY: $(BUILD)/backend.config
+endif
+$(BUILD)/backend.config: | $(BUILD)
+	@printf '%s\n' '$(BACKEND_CONFIG)' > $@.tmp
+	@mv $@.tmp $@
+
+$(BUILD)/lunelette: $(BUILD)/backend.config $(CLI_SOURCES) $(CLI_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $(METAL_CPPFLAGS) $(METAL_TARGET) $(CLI_SOURCES) $(METAL_OBJECTS) -o $@ $(LDLIBS) $(METAL_LIBS)
+
+# Metal is opt-in. The portable C11 targets never see Apple headers/frameworks.
+ifeq ($(METAL),1)
+ifneq ($(shell uname -s),Darwin)
+$(error METAL=1 requires macOS and Apple Silicon; omit METAL=1 for portable CPU)
+endif
+METAL_C_SOURCES = src/metal_weights.c src/metal_yarn.c
+METAL_OBJC_SOURCES = src/metal_runtime.m src/metal_encode.m
+METAL_OBJECTS = $(patsubst src/%.c,$(BUILD)/%.o,$(METAL_C_SOURCES)) $(patsubst src/%.m,$(BUILD)/%.o,$(METAL_OBJC_SOURCES))
+METAL_HEADERS = include/metal.h src/metal_internal.h src/metal_weights.h $(MODEL_HEADERS)
+METAL_CPPFLAGS = -DLUNELETTE_USE_METAL
+METAL_TARGET = -mmacosx-version-min=15.0
+METAL_LIBS = -framework Foundation -framework Metal
+METAL_FLAGS = -fobjc-arc -fno-objc-exceptions -ffp-contract=off -mmacosx-version-min=15.0
+
+$(BUILD)/embed_shader: tools/embed_shader.c | $(BUILD)
+	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic $< -o $@
+
+$(BUILD)/metal_shader.h: src/metal_kernels.metal $(BUILD)/embed_shader
+	./$(BUILD)/embed_shader $< > $@.tmp
+	mv $@.tmp $@
+
+$(BUILD)/metal_%.o: src/metal_%.c $(METAL_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -ffp-contract=off -mmacosx-version-min=15.0 -c $< -o $@
+
+$(BUILD)/metal_%.o: src/metal_%.m $(METAL_HEADERS) $(BUILD)/metal_shader.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -I$(BUILD) $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) -c $< -o $@
+
+$(BUILD)/lunelette: $(METAL_OBJECTS) include/metal.h
+$(BUILD)/test_metal: tests/test_metal.m tests/rope_golden.h $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) $(LDFLAGS) tests/test_metal.m $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
+
+.PHONY: metal-test
+metal-test: $(BUILD)/test_metal $(BUILD)/compare_metal
+	./$(BUILD)/test_metal
+	./$(BUILD)/compare_metal --self-test
+
+test: metal-test
+$(BUILD)/compare_metal: tests/compare_metal.c $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -mmacosx-version-min=15.0 $(LDFLAGS) tests/compare_metal.c $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
+
+endif
+
+# Metadata preflight is portable and model-free even when Metal is not enabled.
+$(BUILD)/test_metal_weights: tests/test_metal_weights.c src/metal_weights.c src/metal_weights.h src/model_facts.c include/model_facts.h src/safetensors.c include/safetensors.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) tests/test_metal_weights.c src/metal_weights.c src/model_facts.c src/safetensors.c -o $@ $(LDLIBS)
+
+.PHONY: metal-weights-test
+metal-weights-test: $(BUILD)/test_metal_weights
+	./$(BUILD)/test_metal_weights
+
+test: metal-weights-test

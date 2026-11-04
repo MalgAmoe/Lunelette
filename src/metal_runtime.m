@@ -1,0 +1,302 @@
+#include "metal_internal.h"
+#include "metal_shader.h"
+#include <mach/mach.h>
+#include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+@implementation LuneletteMetalOwner
+@end
+
+/* malloc owns only the wrapper. bridge_retained/bridge_transfer explicitly move
+ * one ARC owner reference across the C API; no object pointers live in C arrays. */
+static LuneletteMetalOwner *get_owner(lunelette_metal *context)
+{
+    return context ? (__bridge LuneletteMetalOwner *)context->owner : nil;
+}
+
+static int memory_guard(uint64_t weights_bytes, char *error, size_t capacity)
+{
+    /* Conservative M3 bound: <256MiB scratch +52MiB KV +2GiB reserve.
+     * Upload expands directly into final shared buffers with bounded reader scratch.
+     * recommendedMaxWorkingSetSize is guidance, never an allocation guarantee. */
+    uint64_t peak = weights_bytes + 310ULL * 1024 * 1024 + 2ULL * 1024 * 1024 * 1024;
+    vm_statistics64_data_t statistics;
+    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+    vm_size_t page_size;
+    if (peak > 24ULL * 1024 * 1024 * 1024) {
+        snprintf(error, capacity, "Metal memory guard: estimated peak exceeds 24GiB");
+        return -1;
+    }
+    host_t host = mach_host_self();
+    kern_return_t statistics_status = host_statistics64(host, HOST_VM_INFO64,
+        (host_info64_t)&statistics, &count);
+    kern_return_t page_status = host_page_size(host, &page_size);
+    if (host != MACH_PORT_NULL) {
+        mach_port_deallocate(mach_task_self(), host);
+    }
+    if (statistics_status != KERN_SUCCESS || page_status != KERN_SUCCESS) {
+        snprintf(error, capacity, "Metal memory guard: headroom query failed");
+        return -1;
+    }
+    uint64_t available = ((uint64_t)statistics.free_count + statistics.inactive_count +
+        statistics.speculative_count) * page_size;
+    if (available <= peak) {
+        snprintf(error, capacity, "Metal needs conservative %.2f GiB available; found %.2f GiB. "
+            "Release other models or wait for VM reclamation before retrying",
+            peak / 1073741824.0, available / 1073741824.0);
+        return -1;
+    }
+    return 0;
+}
+
+int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, size_t capacity)
+{
+    NSError *failure = nil;
+    MTLCompileOptions *options = [MTLCompileOptions new];
+    if (!options) {
+        snprintf(error, capacity, "Metal compile options allocation failed");
+        return -1;
+    }
+    options.mathMode = MTLMathModeSafe;
+    options.mathFloatingPointFunctions = MTLMathFloatingPointFunctionsPrecise;
+    options.languageVersion = MTLLanguageVersion3_2;
+    NSString *source = [[NSString alloc] initWithBytes:lunelette_metal_shader
+        length:sizeof lunelette_metal_shader - 1 encoding:NSUTF8StringEncoding];
+    if (!source) {
+        snprintf(error, capacity, "Metal embedded source allocation failed");
+        return -1;
+    }
+    id<MTLLibrary> library = [owner->device newLibraryWithSource:source
+        options:options error:&failure];
+    if (!library) {
+        snprintf(error, capacity, "Metal shader compilation: %s",
+            failure ? failure.localizedDescription.UTF8String : "no library");
+        return -1;
+    }
+    NSArray<NSString *> *names = @[@"project", @"norm", @"element", @"rope", @"scores", @"attend"];
+    for (size_t i = 0; i < METAL_PIPELINE_COUNT; i++) {
+        id<MTLFunction> function = [library newFunctionWithName:names[i]];
+        if (function) {
+            owner->pipelines[i] = [owner->device newComputePipelineStateWithFunction:function
+                error:&failure];
+        }
+        if (!owner->pipelines[i] || owner->pipelines[i].threadExecutionWidth != 32) {
+            snprintf(error, capacity, "Metal pipeline %s needs SIMD width 32: %s",
+                names[i].UTF8String, failure ? failure.localizedDescription.UTF8String : "unavailable");
+            return -1;
+        }
+    }
+    owner->queue = [owner->device newCommandQueue];
+    if (!owner->queue) {
+        snprintf(error, capacity, "Metal command queue allocation failed");
+        return -1;
+    }
+    return 0;
+}
+
+static int allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capacity)
+{
+    const size_t widths[METAL_BUFFER_COUNT] = {
+        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_QUERY,
+        LUNELETTE_MODEL_KV, LUNELETTE_MODEL_KV, LUNELETTE_MODEL_QUERY,
+        LUNELETTE_MODEL_KV, LUNELETTE_MODEL_QUERY, LUNELETTE_MODEL_HIDDEN,
+        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_INNER,
+        LUNELETTE_MODEL_INNER, LUNELETTE_MODEL_INNER, LUNELETTE_MODEL_INNER,
+        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN,
+        0, LUNELETTE_MODEL_HEAD_DIM, LUNELETTE_MODEL_HEAD_DIM, 1,
+        LUNELETTE_MODEL_QUERY_HEADS * LUNELETTE_CONTEXT_LIMIT
+    };
+    for (size_t i = 0; i < METAL_BUFFER_COUNT; i++) {
+        size_t elements = i == METAL_LOGITS ? LUNELETTE_MODEL_VOCAB :
+            LUNELETTE_CONTEXT_LIMIT * widths[i];
+        owner->buffers[i] = [owner->device newBufferWithLength:elements * sizeof(float)
+            options:MTLResourceStorageModeShared];
+        if (!owner->buffers[i]) {
+            snprintf(error, capacity, "Metal scratch allocation failed at slot %zu", i);
+            return -1;
+        }
+    }
+    for (size_t i = 0; i < LUNELETTE_MODEL_LAYERS; i++) {
+        size_t bytes = LUNELETTE_CONTEXT_LIMIT * LUNELETTE_MODEL_KV * sizeof(float);
+        owner->keys[i] = [owner->device newBufferWithLength:bytes
+            options:MTLResourceStorageModeShared];
+        owner->values[i] = [owner->device newBufferWithLength:bytes
+            options:MTLResourceStorageModeShared];
+        if (!owner->keys[i] || !owner->values[i]) {
+            snprintf(error, capacity, "Metal KV allocation failed at layer %zu", i);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+lunelette_metal *lunelette_metal_create(const char *first, const char *second,
+    char *error, size_t capacity)
+{
+    char fallback[512];
+    if (!error || !capacity) {
+        error = fallback;
+        capacity = sizeof fallback;
+    }
+    @autoreleasepool {
+        lunelette_metal_weights staged;
+        if (lunelette_metal_weights_open(&staged, first, second, error, capacity) != 0) {
+            return NULL;
+        }
+        lunelette_metal *context = NULL;
+        LuneletteMetalOwner *owner = [LuneletteMetalOwner new];
+        if (!owner) {
+            snprintf(error, capacity, "Metal owner allocation failed");
+            lunelette_metal_weights_close(&staged);
+            return NULL;
+        }
+        owner->device = MTLCreateSystemDefaultDevice();
+        if (!owner->device || ![owner->device supportsFamily:MTLGPUFamilyApple7]) {
+            snprintf(error, capacity, "Metal requires a supported Apple Silicon GPU (Apple7+)");
+            goto cleanup;
+        }
+        if (memory_guard(staged.bytes, error, capacity) != 0 ||
+            lunelette_metal_create_pipelines(owner, error, capacity) != 0) {
+            goto cleanup;
+        }
+        for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+            owner->weights[i] = [owner->device
+                newBufferWithLength:staged.weights[i].elements * sizeof(float)
+                options:MTLResourceStorageModeShared];
+            if (!owner->weights[i]) {
+                snprintf(error, capacity, "Metal weight allocation failed: %s",
+                    staged.weights[i].tensor->name);
+                goto cleanup;
+            }
+            if (st_load_bf16(staged.weights[i].file, staged.weights[i].tensor,
+                    owner->weights[i].contents, staged.weights[i].elements) != 0) {
+                snprintf(error, capacity, "Metal BF16 read failed: %s",
+                    staged.weights[i].tensor->name);
+                goto cleanup;
+            }
+        }
+        if (allocate_buffers(owner, error, capacity) != 0) {
+            goto cleanup;
+        }
+        context = calloc(1, sizeof *context);
+        if (!context) {
+            snprintf(error, capacity, "Metal context allocation failed");
+            goto cleanup;
+        }
+        owner->valid = true;
+        context->owner = (__bridge_retained void *)owner;
+cleanup:
+        lunelette_metal_weights_close(&staged);
+        return context;
+    }
+}
+
+void lunelette_metal_destroy(lunelette_metal *context)
+{
+    if (context) {
+        @autoreleasepool {
+            LuneletteMetalOwner *owner = (__bridge_transfer LuneletteMetalOwner *)context->owner;
+            (void)owner;
+            free(context);
+        }
+    }
+}
+
+int lunelette_metal_reset(lunelette_metal *context, char *error, size_t capacity)
+{
+    LuneletteMetalOwner *owner = get_owner(context);
+    if (!owner) {
+        if (error && capacity) {
+            snprintf(error, capacity, "Metal reset requires a context");
+        }
+        return -1;
+    }
+    owner->length = 0;
+    owner->valid = true;
+    return 0;
+}
+
+static int execute(lunelette_metal *context, const int64_t *ids, size_t count,
+    bool prefill, const float **logits, char *error, size_t capacity)
+{
+    char fallback[512];
+    if (!error || !capacity) {
+        error = fallback;
+        capacity = sizeof fallback;
+    }
+    if (logits) {
+        *logits = NULL;
+    }
+    LuneletteMetalOwner *owner = get_owner(context);
+    if (!owner || !logits || !ids || !count || count > LUNELETTE_CONTEXT_LIMIT ||
+        !owner->valid || owner->length > LUNELETTE_CONTEXT_LIMIT - count ||
+        (prefill ? owner->length != 0 : owner->length == 0)) {
+        snprintf(error, capacity, "Metal sequence rejected: require reset/valid IDs and capacity <=256");
+        return -1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (ids[i] < 0 || ids[i] >= LUNELETTE_MODEL_VOCAB) {
+            snprintf(error, capacity, "Metal invalid token ID at position %zu", i);
+            return -1;
+        }
+    }
+    @autoreleasepool {
+        /* No state publication until all encoders, completion and finite checks succeed. */
+        owner->valid = false;
+        float *input = owner->buffers[METAL_X].contents;
+        const float *embedding = owner->weights[0].contents;
+        uint32_t *positions = owner->buffers[METAL_POSITIONS].contents;
+        for (size_t i = 0; i < count; i++) {
+            memcpy(input + i * LUNELETTE_MODEL_HIDDEN,
+                embedding + (size_t)ids[i] * LUNELETTE_MODEL_HIDDEN,
+                LUNELETTE_MODEL_HIDDEN * sizeof(float));
+            positions[i] = (uint32_t)(owner->length + i);
+            if (lunelette_metal_yarn(positions[i],
+                    (float *)owner->buffers[METAL_COS].contents + i * LUNELETTE_MODEL_HEAD_DIM,
+                    (float *)owner->buffers[METAL_SIN].contents + i * LUNELETTE_MODEL_HEAD_DIM)) {
+                snprintf(error, capacity, "Metal position out of range; reset required");
+                return -1;
+            }
+        }
+        id<MTLCommandBuffer> command = [owner->queue commandBuffer];
+        if (!command) {
+            snprintf(error, capacity, "Metal command allocation failed; reset required");
+            return -1;
+        }
+        if (lunelette_metal_encode(owner, command, count, error, capacity) != 0) {
+            return -1;
+        }
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) {
+            snprintf(error, capacity, "Metal execution failed; reset required: %s",
+                command.error ? command.error.localizedDescription.UTF8String : "unknown command failure");
+            return -1;
+        }
+        const float *output = owner->buffers[METAL_LOGITS].contents;
+        for (size_t i = 0; i < LUNELETTE_MODEL_VOCAB; i++) {
+            if (!isfinite(output[i])) {
+                snprintf(error, capacity, "Metal nonfinite logit %zu; reset required", i);
+                return -1;
+            }
+        }
+        owner->length += count;
+        owner->valid = true;
+        *logits = output;
+        return 0;
+    }
+}
+
+int lunelette_metal_prefill(lunelette_metal *context, const int64_t *ids, size_t count,
+    const float **logits, char *error, size_t capacity)
+{
+    return execute(context, ids, count, true, logits, error, capacity);
+}
+
+int lunelette_metal_decode(lunelette_metal *context, int64_t token,
+    const float **logits, char *error, size_t capacity)
+{
+    return execute(context, &token, 1, false, logits, error, capacity);
+}

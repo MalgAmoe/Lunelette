@@ -6,7 +6,8 @@ optimized, portable runtime.
 **Status: experimental, validation incomplete.** Uncached fixed-layout 3B text forward through all 26 layers, final
 normalization and tied last-token vocabulary logits, a bounded Tekken13 tokenizer,
 KV cache, and single-turn greedy text CLI (cached by default, uncached baseline optional).
-The original first-block API is preserved.
+The original first-block API is preserved. An optional isolated Metal runtime
+provides the same single-turn CLI on supported Macs (see below).
 Last logits pass all five original and three held-out fixtures. Full-depth hidden
 states pass a separately calibrated provisional criterion; longer still fails the
 strict elementwise diagnostic. See [the bounded contract](docs/full-depth-validation.md).
@@ -16,7 +17,7 @@ strict elementwise diagnostic. See [the bounded contract](docs/full-depth-valida
 - Ministral 3 **3B**, text-only; eventually the **8B and 14B** variants.
 - Development machine: Apple M5, 32 GB unified memory.
 - Readable CPU correctness baseline first; profile before adding Apple-specific
-  acceleration. Keep platform-specific code separate when it becomes necessary.
+  acceleration. The optional Metal implementation stays separate from portable C.
 - Python is reference/testing tooling only, not a runtime dependency.
 
 ## Build and check
@@ -265,7 +266,7 @@ pipeline synthetically. Real fixtures exercise that pipeline.
 This is a targeted diagnostic tool, not an execution framework: it recomputes
 embedding/norm per projection to bound storage. That comparator alone does not validate attention, RoPE, residuals or MLP;
 see the complete first-block comparison below. That comparator does not validate cache or generation. Batching,
-quantization and GPU behavior remain unimplemented.
+quantization remain unimplemented; this diagnostic does not exercise the optional Metal runtime.
 
 ## Next milestones
 
@@ -515,7 +516,9 @@ Existing embedding, first-block, reader and kernel tests are retained.
 
 Limits: one unpadded sequence of 1–256 supplied IDs starting at position zero;
 this uncached forward API itself provides no cache, generation or tokenization.
-No batching, vision, quantization, GPU, 8B/14B or arbitrary configurations. Finite checkpoint values are assumed; there is no
+This CPU API has no GPU execution; the optional Metal runtime is separate.
+No batching, vision, quantization, 8B/14B or arbitrary configurations.
+Finite checkpoint values are assumed; there is no
 exhaustive nonfinite-weight scan. Optional real fixtures exercise up to 150 tokens,
 not a real 256-token or long-context forward. These are bounded correctness tests,
 not throughput benchmarks or claims about cached execution.
@@ -660,3 +663,10 @@ reference logits at `2e-4 + 1e-4*abs(reference)`, checks greedy tokens and the c
 generation adapter/reset. Default tests need no models or Python and compare the
 shared offset-attention seam exactly through the 256-token boundary. Full-prefix
 execution and its existing comparison tolerances are unchanged.
+
+## Optional Metal runtime
+
+CPU remains the default portable C11 build. On macOS 15+ with suitable Apple
+Silicon and unified memory, build with `make METAL=1 BUILD=build/metal` and select
+`--backend metal`. The same tokenizer/chat/raw CLI is used; Metal rejects
+`--uncached`. See [Metal usage, API, limits and validation](docs/metal.md).

@@ -1,4 +1,5 @@
-YaRN formulas in src/attention.c are adapted from Hugging Face Transformers
+YaRN formulas in src/attention.c and src/metal_yarn.c
+and model math in src/metal_kernels.metal are adapted from Hugging Face Transformers
 v5.0.0 (08810b1e278938278c50153ee1edfd7a20a759da), modeling_rope_utils.py.
 Copyright 2024 The HuggingFace Team. All rights reserved.
 Apache License 2.0 (LICENSES/Apache-2.0.txt).

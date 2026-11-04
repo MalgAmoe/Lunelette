@@ -12,6 +12,14 @@ trap 'rm -f cli-test.out cli-test.err' EXIT HUP INT TERM
 "$cli" --version >/dev/null
 reject
 reject --invalid
+reject --backend unknown
+grep -- '--backend must be cpu or metal' cli-test.err >/dev/null
+reject --backend metal --uncached
+grep -- 'Metal does not support --uncached' cli-test.err >/dev/null
+reject --backend cpu --backend cpu
+reject --backend
+reject --backend cpu --tokenizer missing --prompt x --dump-prompt-ids
+if grep -- 'Unknown or duplicate argument' cli-test.err >/dev/null; then exit 1; fi
 reject --prompt
 reject --prompt x
 reject --tokenizer missing --prompt x --raw --system s --dump-prompt-ids
