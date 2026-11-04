@@ -672,6 +672,24 @@ static void test_state(LuneletteMetalOwner *owner)
     output[LUNELETTE_MODEL_VOCAB - 1] = 0;
     CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
     CHECK(owner->valid && owner->length == 1 && logits == output);
+    /* Retired CPU cache tests covered retryable late I/O failure. Here argument
+     * rejection preserves a prefix, but execution failure invalidates it until
+     * reset. Never import the former CPU rollback contract into this engine. */
+    CHECK(lunelette_metal_decode(&context, -1, &logits, error, sizeof error) != 0);
+    CHECK(owner->valid && owner->length == 1 && logits == NULL);
+    CHECK(lunelette_metal_decode(&context, LUNELETTE_MODEL_VOCAB,
+        &logits, error, sizeof error) != 0);
+    CHECK(owner->valid && owner->length == 1 && logits == NULL);
+    synthetic->completion = MTLCommandBufferStatusError;
+    CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error) != 0);
+    CHECK(!owner->valid && owner->length == 1 && logits == NULL);
+    synthetic->completion = MTLCommandBufferStatusCompleted;
+    CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error) != 0);
+    CHECK(!owner->valid && logits == NULL);
+    CHECK(lunelette_metal_reset(&context, error, sizeof error) == 0);
+    CHECK(owner->valid && owner->length == 0);
+    CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
+    CHECK(owner->valid && owner->length == 1 && logits == output);
     owner->queue = real_queue;
     lunelette_metal_destroy(NULL);
     CHECK(lunelette_metal_reset(NULL, NULL, 0) != 0);

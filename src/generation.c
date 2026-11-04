@@ -1,6 +1,7 @@
 #include "generation.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -77,43 +78,4 @@ int lunelette_generate_with_logits(lunelette_logits_fn next, void *context,
         error[0] = '\0';
     }
     return 0;
-}
-
-struct forward_context {
-    st_file *first;
-    st_file *second;
-    float *hidden;
-};
-
-static int next_forward(void *opaque, const int64_t *ids, size_t count,
-                        float *logits, char *error, size_t capacity)
-{
-    struct forward_context *context = opaque;
-    return lunelette_forward(context->first, context->second, ids, count,
-                             context->hidden, logits, NULL, error, capacity);
-}
-
-int lunelette_generate(st_file *shard1, st_file *shard2,
-    const int64_t *prompt, size_t count, const lunelette_generation_config *config,
-    lunelette_generation_result *result, char *error, size_t capacity)
-{
-    if (!shard1 || !shard2 || shard1 == shard2 || !shard1->file || !shard2->file ||
-        shard1->file == shard2->file) {
-        if (error && capacity) {
-            snprintf(error, capacity, "generation: require two distinct open shards");
-        }
-        return -1;
-    }
-    struct forward_context context = {shard1, shard2, NULL};
-    context.hidden = malloc(256 * 3072 * sizeof(float));
-    if (!context.hidden) {
-        if (error && capacity) {
-            snprintf(error, capacity, "generation: hidden allocation failed");
-        }
-        return -1;
-    }
-    int rc = lunelette_generate_with_logits(next_forward, &context, prompt, count,
-                                            config, result, error, capacity);
-    free(context.hidden);
-    return rc;
 }

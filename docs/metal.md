@@ -1,7 +1,7 @@
-# Optional Metal text runtime
+# Production text runtime
 
-The default build is portable C11 and links no Apple frameworks. Metal is an
-explicit, concrete runtime, not an operator-dispatch framework. It requires
+The default application uses one resident Metal/MPS engine with required CPU
+host work. It is a concrete runtime, not an operator-dispatch framework. It requires
 macOS 15+, Apple Silicon (Apple7 GPU family or newer), the Command Line Tools
 with a macOS SDK, and enough unified memory. Development validation uses a
 32 GiB machine; smaller-memory configurations are not promised to fit.
@@ -9,9 +9,8 @@ with a macOS SDK, and enough unified memory. Development validation uses a
 All shell commands here run from the repository root, not `docs/`.
 
 ```sh
-make BUILD=build/cpu test
-make METAL=1 BUILD=build/metal test
-build/metal/lunelette --backend metal \
+make BUILD=build/metal test
+build/metal/lunelette \
   --weights models/model-00001-of-00002.safetensors \
   --weights2 models/model-00002-of-00002.safetensors \
   --tokenizer models/tekken.json --prompt 'What is 2 + 2?' \
@@ -20,14 +19,14 @@ build/metal/lunelette --backend metal \
 
 Supply the exact Ministral-3-3B-Instruct-2512 BF16 checkpoint files yourself;
 no files are downloaded. Either shard order is accepted, and no index file is
-read. Use distinct build directories for CPU/Metal and different compiler flags.
-On other platforms `METAL=1` fails at make time. A CPU-only binary rejects
-`--backend metal` with build instructions. A Metal build with no supported device
+read. Use distinct build directories for different compiler flags.
+Other platforms can run `make core-test`, but cannot build the application.
+A build with no supported device
 or insufficient headroom returns an error, never falls back silently.
 
-`--backend cpu` is the default. Tokenization, optional system message, `--raw`
-(BOS plus literal user text), greedy tie-breaking, EOS=2, output decoding and ID
-dumps are shared with CPU. Metal rejects `--uncached` explicitly. Total returned
+Tokenization, optional system message, `--raw` (BOS plus literal user text),
+greedy tie-breaking, EOS=2, output decoding and ID dumps retain shared host policy.
+The removed `--backend` and `--uncached` selectors fail explicitly. Total returned
 prompt plus generated IDs is at most 256. The output budget is
 `min(max_new_tokens, 256 - prompt_count)`; a full prompt or zero budget performs
 no forward. A generated EOS is included in IDs and omitted from decoded text.
@@ -50,9 +49,8 @@ support. The larger checkpoint position limit is not a supported context claim.
   weight/scratch/KV buffers. Multi-token block projections default to MPS GEMM.
 * **Default change:** `create()` and NULL/default `create_with_options()` options
   now select MPS for the seven block projections when count > 1. Select
-  `--backend metal --metal-prefill custom` or `LUNELETTE_METAL_PREFILL_CUSTOM`
-  through `lunelette_metal_options` for the precise custom path. The CLI rejects
-  `--metal-prefill` with CPU and rejects unknown/duplicate modes. Decode,
+  `--metal-prefill custom` or `LUNELETTE_METAL_PREFILL_CUSTOM`
+  through `lunelette_metal_options` for the precise custom path. The CLI rejects unknown/duplicate prefill modes. Decode,
   single-token prefill and the vocabulary head always retain custom arithmetic.
 * MPS descriptors use Float32 storage, explicit tight rowBytes and
   `transposeLeft=NO, transposeRight=YES`, alpha=1, beta=0. Inputs are token-major;
@@ -113,7 +111,7 @@ Implementation modules: `metal_weights.c` stages reader/model-facts validation;
 ## Verification
 
 `make test` remains offline/model-free/Python-free, including synthetic complete
-metadata preflight. `make METAL=1 BUILD=build/metal test` additionally runs
+metadata preflight. `make BUILD=build/metal test` runs
 small deterministic GPU MPS short/long-K awkward shapes against independent double sums,
 current-shape cache replacement and allocation-failure checks, custom projection tails, RMSNorm, element, attention and YaRN
 rotation comparisons, state rejection/reset checks, every encoder's nil path,
@@ -124,7 +122,7 @@ correctness or actual device-fault recovery. Test checks remain active under
 Optional real-weight validation accepts explicit paths only:
 
 ```sh
-make METAL=1 BUILD=build/metal build/metal/compare_metal
+make BUILD=build/metal build/metal/compare_metal
 build/metal/compare_metal --self-test
 build/metal/compare_metal models/shard1.safetensors models/shard2.safetensors \
   fixtures/prompt.ids fixtures/generation.safetensors

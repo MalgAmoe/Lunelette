@@ -111,7 +111,6 @@ int main(void)
     CHECK(lunelette_generate_with_logits(next, &fake, NULL, 1, &config, &result, NULL, 0) == -1);
     CHECK(lunelette_generate_with_logits(next, &fake, ids, 1, NULL, &result, NULL, 0) == -1);
     CHECK(lunelette_generate_with_logits(next, &fake, ids, 1, &config, NULL, NULL, 0) == -1);
-    CHECK(lunelette_generate(NULL, NULL, ids, 1, &config, &result, NULL, 0) == -1);
     puts("generation: EOS, limits 256/257, ties, finite logits, atomic errors PASS");
     return 0;
 }

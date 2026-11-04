@@ -1,7 +1,7 @@
 #ifndef LUNELETTE_CHAT_H
 #define LUNELETTE_CHAT_H
 #include "tokenizer.h"
-#include "generation.h"
+#include "runtime_limits.h"
 
 /* Ordinary text is encoded separately from control IDs (literal special spellings
  * are not controls). Raw means BOS + prompt, and forbids a system message.

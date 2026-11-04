@@ -12,24 +12,18 @@ trap 'rm -f cli-test.out cli-test.err test_tokenizer_fixture.tmp' EXIT HUP INT T
 "$cli" --version >/dev/null
 reject
 reject --invalid
-reject --metal-prefill mps
-reject --backend cpu --metal-prefill custom
-reject --backend metal --metal-prefill bad
-grep -- '--metal-prefill requires' cli-test.err >/dev/null
-reject --backend metal --metal-prefill
-reject --backend metal --metal-prefill mps --metal-prefill custom
+reject --metal-prefill bad
+grep -- '--metal-prefill must be' cli-test.err >/dev/null
+reject --metal-prefill
+reject --metal-prefill mps --metal-prefill custom
 for mode in mps custom; do
-    reject --backend metal --metal-prefill "$mode" --tokenizer missing --prompt x --dump-prompt-ids
-    if grep 'Unknown or duplicate\|--metal-prefill requires' cli-test.err >/dev/null; then exit 1; fi
+    reject --metal-prefill "$mode" --tokenizer missing --prompt x --dump-prompt-ids
+    if grep 'Unknown or duplicate\|--metal-prefill must be' cli-test.err >/dev/null; then exit 1; fi
 done
-reject --backend unknown
-grep -- '--backend must be cpu or metal' cli-test.err >/dev/null
-reject --backend metal --uncached
-grep -- 'Metal does not support --uncached' cli-test.err >/dev/null
-reject --backend cpu --backend cpu
-reject --backend
-reject --backend cpu --tokenizer missing --prompt x --dump-prompt-ids
-if grep -- 'Unknown or duplicate argument' cli-test.err >/dev/null; then exit 1; fi
+for option in '--backend cpu' '--backend metal' '--backend' '--uncached'; do
+    reject $option
+    grep 'were retired' cli-test.err >/dev/null
+done
 reject --prompt
 reject --prompt x
 reject --tokenizer missing --prompt x --raw --system s --dump-prompt-ids

@@ -4,15 +4,15 @@ A learning-first Ministral 3 inference engine in C.
 
 **Experimental; validation incomplete.** The fixed-layout **3B text-only** runtime
 implements all 26 layers, final normalization, tied last-token logits, a bounded
-Tekken13 tokenizer, KV cache, and single-turn greedy generation. CPU is the
-portable baseline and default backend; Metal is optional on supported Macs.
-Prompt plus generated context is limited to **256 tokens** on both backends.
+Tekken13 tokenizer, KV cache, and single-turn greedy generation. One engine combines
+CPU host work with resident Metal/MPS execution on supported Apple Silicon Macs.
+Prompt plus generated context is limited to **256 tokens**.
 
-## CPU quickstart
+## Quickstart
 
 Run all commands in this README and the linked guides from the repository root.
-Requires Make and a C11 compiler. Only the CPU build uses just the standard C/math
-runtime libraries; Metal additionally links Apple frameworks. Python is not a
+Requires macOS 15+, Apple Silicon, Make and Command Line Tools/macOS SDK.
+The application links Foundation, Metal and MetalPerformanceShaders. Python is not a
 runtime requirement. No weights, fixtures or dependencies are downloaded.
 
 ```sh
@@ -24,7 +24,8 @@ make BUILD=build/ndebug CFLAGS='-std=c11 -O2 -DNDEBUG -Wall -Wextra -Wpedantic' 
 ```
 
 `make test` is offline, model-free and Python-free. Use separate build directories
-when changing compiler flags or enabling Metal.
+when changing compiler flags. `make core-test` is an optional portable host-only
+suite, not a second inference engine.
 
 Supply the exact Ministral-3-3B-Instruct-2512 BF16 checkpoint's two shards and
 `tekken.json` yourself. These example paths are explicit repository-local,
@@ -45,9 +46,9 @@ added newline. Text agreement is not a numerical correctness test.
 
 ## CLI behavior and limits
 
-- CPU generation is cached by default; `--uncached` recomputes the full prefix.
-  CPU weights are reread, not retained as a full expanded model; interactive
-  performance is not promised.
+- Generation uses resident weights and KV cache. `--backend` and `--uncached`
+  are retired and fail with a diagnostic. Zero budget/full context validates
+  checkpoint metadata without allocating a GPU context.
 - Framing is BOS + optional `[SYSTEM_PROMPT]system[/SYSTEM_PROMPT]` +
   `[INST]user[/INST]`, with no added spaces or implicit system message.
   `--raw` instead uses BOS + ordinary prompt text and forbids `--system`.
@@ -64,17 +65,17 @@ added newline. Text agreement is not a numerical correctness test.
   A budget cutoff can leave incomplete UTF-8 bytes. Stdout contains only text.
 
 Full argument rejection, framing, ownership and failure policies are in the
-[CPU runtime guide](docs/cpu-runtime.md) and relevant public headers.
+[runtime guide](docs/metal.md) and relevant public headers.
 
-## Optional Metal quickstart
+## Execution and precision
 
 Requires macOS 15+, supported Apple Silicon, Command Line Tools/macOS SDK and
 sufficient unified memory (development validation: base Apple M5, 32 GiB).
 
 ```sh
-make METAL=1 BUILD=build/metal
-make METAL=1 BUILD=build/metal test
-build/metal/lunelette --backend metal \
+make BUILD=build/metal
+make BUILD=build/metal test
+build/metal/lunelette \
   --weights models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
   --weights2 models/Ministral-3-3B-Instruct-2512-BF16/model-00002-of-00002.safetensors \
   --tokenizer models/Ministral-3-3B-Instruct-2512-BF16/tekken.json \
@@ -82,13 +83,13 @@ build/metal/lunelette --backend metal \
 ```
 
 Multi-token block projections default to **MPS**. Select
-`--backend metal --metal-prefill custom` explicitly for the custom path;
+`--metal-prefill custom` explicitly for the custom path;
 there is no silent fallback on MPS errors. Decode, single-token prefill and the
-vocabulary head use custom arithmetic. Metal rejects `--uncached`.
+vocabulary head use custom arithmetic. Removed engine selectors fail explicitly.
 Weights, activations and KV storage are FP32 after BF16 weight expansion. MPS
 Float32 storage does **not** establish full-FP32 internal accumulation: Apple's
-inspected API does not specify it. Custom kernels use precise FP32 math;
-CPU/model reductions have their own documented rounding contracts.
+inspected API does not specify it. Custom kernels use precise FP32 math.
+Historical CPU reduction contracts are retained as provenance only.
 See [Metal usage, memory, ownership, precision and validation](docs/metal.md).
 
 ## What the numerical evidence covers
@@ -110,20 +111,20 @@ quantization, 8B/14B or arbitrary checkpoint configuration is supported.
 Optional harnesses require externally supplied fixtures; generator scripts and
 outputs from prior numerical experiments are not bundled. See the guides for
 per-harness schemas, provenance, historical timings, failure counts and untested
-build/backend gaps; this documentation pass did not rerun numerical comparisons.
+configurations. Historical CPU measurements are not new validation of the current
+engine.
 
 ## Documentation and source map
 
-- [CPU runtime](docs/cpu-runtime.md): CLI, primitive numerical/overlap contracts,
-  attention, first block, full forward, generation and cache ownership/error policy.
+- [Historical CPU runtime](docs/cpu-runtime.md): retired API provenance.
 - [Safetensors](docs/safetensors.md): bounded parser, reader, BF16 and embedding API.
 - [Validation](docs/validation.md): optional harness commands/schemas, provenance,
   preserved numerical history and known gaps.
-- [Bounded full-depth acceptance](docs/full-depth-validation.md): current frozen
+- [Bounded full-depth acceptance](docs/full-depth-validation.md): historical frozen
   thresholds, calibration, held-out evidence and strict diagnostics.
 - [Model facts](docs/model-facts.md) and [Metal runtime](docs/metal.md).
 - [Reference artifact index](tools/reference/README.md): supplied versus bundled tools.
-- `include/`: public contracts; `src/`: CPU/CLI and isolated Metal implementation;
+- `include/`: public contracts; `src/`: host/CLI and resident Metal implementation;
   `tests/`: deterministic tests; `tools/`: maintained helper tooling.
 
 ## Attribution and distribution

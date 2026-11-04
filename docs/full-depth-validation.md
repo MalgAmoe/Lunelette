@@ -1,3 +1,7 @@
+> Historical provenance: standalone CPU inference and its APIs/commands were
+> retired after `4d4f8f8`. Nothing below is a current invocation guide.
+> Use [the production runtime](metal.md) for maintained execution.
+
 # Provisional bounded full-depth validation
 
 This is a test acceptance rule, not a production math change or universal accuracy

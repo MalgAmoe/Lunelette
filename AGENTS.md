@@ -3,9 +3,9 @@
 ## Purpose and scope
 
 Lunelette is a learning-first Ministral 3 inference engine in C. Understandable
-correctness comes before optimization. Initial target: 3B, text-only, portable
-CPU baseline on a base Apple M5 with 32 GB unified memory. Future targets include
-8B/14B, Mac acceleration, and portable edge deployment.
+correctness comes before optimization. Initial target: 3B, text-only, macOS
+resident Metal/MPS runtime on a base Apple M5 with 32 GB unified memory.
+Standalone CPU inference is retired; portability applies to host/core tests only.
 
 Verify architecture details against the exact checkpoint configuration and trusted
 implementation. Do not assume all model sizes share every architectural detail.
@@ -13,7 +13,7 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
 
 ## C style
 
-- Use C11 and the standard library for the portable baseline. Isolate and explain
+- Use C11 and the standard library for shared host code. Isolate and explain
   platform-specific code when a concrete need arises.
 - Use four-space indentation, no tabs in C; retain recipe tabs in Makefiles.
 - Put function opening braces on a new line; control-flow braces on the same line.
@@ -51,8 +51,10 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
 - Keep model execution separate from weight-format parsing and platform kernels.
 - No speculative backend frameworks, generic tensor systems, or dependencies.
 - Python is development/reference tooling, never a runtime requirement for C.
-- Start with transparent numerical kernels; measure before optimizing. Preserve
-  a simple correctness baseline when adding accelerated implementations.
+- Keep the existing resident Metal/MPS engine; measure before optimizing.
+  Frozen independent PyTorch fixtures are the numerical oracle, not a second C
+  inference engine. CPU tokenization, parsing, metadata, generation policy and
+  YaRN preparation remain required. Do not introduce backend dispatch wrappers.
 - Avoid loading entire model files when a bounded read suffices. Do not introduce
   complex caching or allocators before measurements justify them.
 - Use upstream projects as references, not templates to copy wholesale.
@@ -75,7 +77,7 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
 - Record fixture provenance: model revision, prompt/token IDs, tokenizer settings,
   library versions, dtype/device, tensor shapes, layout, and capture points.
 - Generated text alone does not establish correctness. Compare intermediate
-  activations/logits and cached versus uncached execution as those features land.
+  activations/logits and prefill/decode/reset behavior against independent reference fixtures.
 - Do not claim untested GPU, quantization, long-context, batching, or vision support.
 
 ## Verification and completion

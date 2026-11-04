@@ -1,3 +1,7 @@
+> Historical provenance: standalone CPU inference and its APIs/commands were
+> retired after `4d4f8f8`. Nothing below is a current invocation guide.
+> Use [the production runtime](metal.md) for maintained execution.
+
 # CPU runtime and CLI contracts
 
 All shell commands in this guide run from the repository root, not `docs/`.
@@ -32,7 +36,7 @@ the small unit tests alone are not evidence of model correctness.
 
 ## Bounded text CLI
 
-```sh
+```text
 ./build/lunelette --weights /path/to/model-00001-of-00002.safetensors \
   --weights2 /path/to/model-00002-of-00002.safetensors \
   --tokenizer /path/to/tekken.json --system 'Be concise.' \

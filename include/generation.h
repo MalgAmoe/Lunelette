@@ -1,7 +1,8 @@
 #ifndef LUNELETTE_GENERATION_H
 #define LUNELETTE_GENERATION_H
 
-#include "forward.h"
+#include <stddef.h>
+#include <stdint.h>
 
 #include "model_facts.h"
 #include "runtime_limits.h"
@@ -35,7 +36,7 @@ typedef struct {
 typedef int (*lunelette_logits_fn)(void *context, const int64_t *ids, size_t count,
                                   float *logits, char *error, size_t capacity);
 
-/* Recompute the full prefix for each new token. Prompt length 1..256; all IDs
+/* Supply the full prefix to the callback for each new token. Prompt length 1..256; all IDs
  * validated even for zero budget. Prompt EOS is not a stop condition. Never
  * returns more than 256 total tokens (prompt + new); a full prompt needs no call.
  * EOS takes precedence over budget/context when simultaneously reached, then
@@ -48,12 +49,6 @@ typedef int (*lunelette_logits_fn)(void *context, const int64_t *ids, size_t cou
  * callback/context safety. Returns 0 or -1 with diagnostic when supplied.
  */
 int lunelette_generate_with_logits(lunelette_logits_fn next, void *context,
-    const int64_t *prompt, size_t count, const lunelette_generation_config *config,
-    lunelette_generation_result *result, char *error, size_t capacity);
-
-/* Same contract using existing uncached forward. Shards borrowed, not concurrent.
- * No tokenizer, cache, or sampling. */
-int lunelette_generate(st_file *shard1, st_file *shard2,
     const int64_t *prompt, size_t count, const lunelette_generation_config *config,
     lunelette_generation_result *result, char *error, size_t capacity);
 

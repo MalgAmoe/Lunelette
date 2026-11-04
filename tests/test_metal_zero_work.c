@@ -5,7 +5,6 @@
 #include <unistd.h>
 #define TEST_POSIX_FDS 1
 #endif
-#define LUNELETTE_USE_METAL 1
 #define main lunelette_cli_main
 #define lunelette_metal_weights_open test_metadata_open
 #define lunelette_metal_weights_close test_metadata_close
@@ -126,7 +125,7 @@ int lunelette_metal_decode(lunelette_metal *metal, int64_t token,
 
 int main(void)
 {
-    char *args[] = {"test", "--backend", "metal", "--tokenizer", "fake",
+    char *args[] = {"test", "--tokenizer", "fake",
         "--prompt", "fake", "--weights", "first", "--weights2", "second",
         "--dump-output-ids", "--max-new-tokens", "0"};
     int argc = (int)(sizeof args / sizeof args[0]);

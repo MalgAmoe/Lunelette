@@ -1,5 +1,4 @@
 #include "metal_weights.h"
-#include "cpu_weights.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,22 +19,8 @@ static void tensor(st_tensor *value, const char *name, size_t rows, size_t cols)
     value->shape[1] = cols;
 }
 
-/* Exercise the same policy corpus against both backends, without reading any
- * tensor data. Storage/upload ownership deliberately stays backend-specific. */
-static int validate_policy(lunelette_metal_weights *weights, char *error, size_t capacity)
-{
-    st_file *files[] = {&weights->files[0], &weights->files[1]};
-    char cpu_error[512];
-    int metal = lunelette_metal_weights_validate(weights, error, capacity);
-    int cpu = lunelette_cpu_validate_layout(files, cpu_error, sizeof cpu_error);
-    CHECK((metal == 0) == (cpu == 0));
-    return metal;
-}
-
-/* Both backends require st_open-produced handles. st_find returns the first
- * match, so Metal's layout validator cannot detect fabricated duplicates inside
- * one shard. The public parser rejects those before either backend sees them;
- * cross-shard uniqueness is instead the layout validators' responsibility. */
+/* Expected acceptance/rejection is asserted directly at each call below.
+ * Parser rejects within-shard duplicates; layout rejects cross-shard duplicates. */
 static void duplicate_shard_test(const char *path, const char *name)
 {
     char header[1024];
@@ -53,11 +38,11 @@ static void duplicate_shard_test(const char *path, const char *name)
     CHECK(fwrite("\0\0\0\0", 1, 4, file) == 4);
     CHECK(fclose(file) == 0);
     char error[512];
-    st_file cpu;
-    CHECK(st_open(&cpu, path, error, sizeof error) != 0);
+    st_file parsed;
+    CHECK(st_open(&parsed, path, error, sizeof error) != 0);
     CHECK(strstr(error, "unique") != NULL);
-    CHECK(cpu.file == NULL && cpu.tensors == NULL);
-    st_close(&cpu);
+    CHECK(parsed.file == NULL && parsed.tensors == NULL);
+    st_close(&parsed);
     lunelette_metal_weights metal;
     CHECK(lunelette_metal_weights_open(&metal, path, path, error, sizeof error) != 0);
     CHECK(strstr(error, "unique") != NULL);
@@ -94,30 +79,30 @@ int main(int argc, char **argv)
     weights.files[1].tensors = tensors + 100;
     weights.files[1].count = LUNELETTE_METAL_WEIGHT_COUNT - 100;
     char error[512];
-    CHECK(validate_policy(&weights, error, sizeof error) == 0);
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
     CHECK(weights.bytes == 3429006336ULL * sizeof(float));
     CHECK(weights.weights[index - 1].file == &weights.files[1]);
-    CHECK(validate_policy(&weights, error, sizeof error) == 0);
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
     CHECK(weights.bytes == 3429006336ULL * sizeof(float));
     for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
         char saved_name[ST_MAX_NAME];
         memcpy(saved_name, tensors[i].name, sizeof saved_name);
         snprintf(tensors[i].name, sizeof tensors[i].name, "unrelated.tensor");
-        CHECK(validate_policy(&weights, error, sizeof error) != 0);
+        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         memcpy(tensors[i].name, saved_name, sizeof saved_name);
         tensors[i].dtype = ST_F32;
-        CHECK(validate_policy(&weights, error, sizeof error) != 0);
+        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         CHECK(strstr(error, tensors[i].name) != NULL);
         tensors[i].dtype = ST_BF16;
         tensors[i].shape[0]++;
-        CHECK(validate_policy(&weights, error, sizeof error) != 0);
+        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         tensors[i].shape[0]--;
         tensors[i].rank++;
-        CHECK(validate_policy(&weights, error, sizeof error) != 0);
+        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         tensors[i].rank--;
         if (tensors[i].rank == 2) {
             tensors[i].shape[1]++;
-            CHECK(validate_policy(&weights, error, sizeof error) != 0);
+            CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
             tensors[i].shape[1]--;
         }
     }
@@ -128,20 +113,20 @@ int main(int argc, char **argv)
     weights.files[0].count = LUNELETTE_METAL_WEIGHT_COUNT;
     weights.files[1].tensors = &unrelated;
     weights.files[1].count = 1;
-    CHECK(validate_policy(&weights, error, sizeof error) == 0);
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
     for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
         weights.files[1].tensors = &tensors[i];
-        CHECK(validate_policy(&weights, error, sizeof error) != 0);
+        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         CHECK(strstr(error, tensors[i].name) != NULL);
     }
     weights.files[0].count = 100;
     weights.files[1].tensors = tensors + 100;
     weights.files[1].count = LUNELETTE_METAL_WEIGHT_COUNT - 100;
     weights.files[1].count--;
-    CHECK(validate_policy(&weights, error, sizeof error) != 0);
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
     weights.files[1].count++;
     weights.files[1].tensors = tensors;
-    CHECK(validate_policy(&weights, error, sizeof error) != 0);
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
     CHECK(strstr(error, "Duplicate") != NULL);
     /* Do not close the synthetic borrowed descriptors. Real failed open closes
      * its own descriptors; repeat to catch accidental live/reused handles. */

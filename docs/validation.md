@@ -13,8 +13,8 @@ strict hidden-state failure counts remain diagnostics, not erased evidence.
 Isolated-stage and last-logit tolerances remain unchanged. These external fixtures
 were generated previously; their generator and outputs are not bundled here.
 Commands consume supplied artifacts, not an end-to-end bundled reproduction.
-For CPU API ownership and failure guarantees see [runtime contracts](cpu-runtime.md)
-and [reader contracts](safetensors.md); Metal has [its own guide](metal.md).
+For current execution see [runtime contracts](metal.md) and
+[reader contracts](safetensors.md). CPU API history is [archived](cpu-runtime.md).
 
 ## Optional real-weight validation
 
@@ -65,9 +65,14 @@ payload bytes. Portable C11 has no reliable truncation/buffer-invalidation hook
 for that scenario. Truncation before open is tested at every byte position;
 read failures are checked by the reader and diagnosed by the comparator.
 
+> The remaining sections are historical CPU numerical provenance from
+> `4d4f8f8`. Their consumers and commands are retired, not current build targets.
+> Frozen fixtures, thresholds and recorded failures remain evidence; use
+> `compare_metal` as documented in [the runtime guide](metal.md).
+
 ## Optional layer-0 pre-attention comparison
 
-```sh
+```text
 make build/compare_projections
 ./build/compare_projections FIXTURE.safetensors WEIGHT_SHARD [MORE_SHARDS...]
 ```
@@ -135,7 +140,7 @@ quantization remain unimplemented; this diagnostic does not exercise the optiona
 
 Optional isolated reference comparison (fixtures supplied separately):
 
-```sh
+```text
 make build/compare_attention
 build/compare_attention fixtures/attention/short.safetensors
 build/compare_attention fixtures/attention/multilingual.safetensors
@@ -162,7 +167,7 @@ C model or full long-context validation.
 
 ## First-block comparison
 
-```sh
+```text
 make build/compare_block
 ./build/compare_block WEIGHT_SHARD FIXTURE.safetensors [MORE_FIXTURES...]
 # Five named fixtures, explicit caller-supplied paths:
@@ -211,7 +216,7 @@ correctness claim follows from this first-block result.
 
 ## Full-forward comparison
 
-```sh
+```text
 make forward-integration \
   WEIGHTS=models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
   WEIGHTS2=models/Ministral-3-3B-Instruct-2512-BF16/model-00002-of-00002.safetensors \
@@ -351,7 +356,7 @@ Synthetic tests cover EOS, zero/exact budgets, total context 256, rejection of
 Optional real validation accepts independently exported safetensors per step,
 each with `input_ids` I64 `[1,N]` and `last_logits` F32 `[1,131072]`:
 
-```sh
+```text
 make build/compare_generation
 ./build/compare_generation SHARD1 SHARD2 STEP0.safetensors STEP1.safetensors
 # A direct forward-only comparison also permits the full 256-token boundary:
@@ -369,7 +374,7 @@ longer contexts, or other model sizes.
 
 Optional per-step verification (fixtures contain `input_ids` and `last_logits`):
 
-```sh
+```text
 make build/compare_cache
 build/compare_cache SHARD1 SHARD2 STEP0.safetensors STEP1.safetensors STEP2.safetensors
 ```

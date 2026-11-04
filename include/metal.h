@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Optional Darwin runtime, linked only with METAL=1. No Apple types cross this API.
+/* Production Darwin runtime. No Apple types cross this API.
  * Each context owns FP32 text weights, scratch and a 256-position KV cache.
  * Single caller only; no concurrent calls, including destroy/reset.
  */
