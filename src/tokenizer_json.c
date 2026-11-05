@@ -348,6 +348,29 @@ int tj_read(const char *path, tj_document *d)
     return 1;
 }
 
+int tj_read_memory(const void *data, size_t length, tj_document *d)
+{
+    memset(d, 0, sizeof(*d));
+    if (length > 8192) {
+        return 0;
+    }
+    d->data = malloc(length + 1);
+    if (!d->data) {
+        return 0;
+    }
+    memcpy(d->data, data, length);
+    d->length = length;
+    d->count = 1;
+    if (parse(d, 0) == 1) {
+        whitespace(d);
+        if (d->position == d->length) {
+            return 1;
+        }
+    }
+    tj_free(d);
+    return 0;
+}
+
 void tj_free(tj_document *d)
 {
     free(d->data);

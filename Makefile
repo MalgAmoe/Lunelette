@@ -151,3 +151,23 @@ native-regression: $(BUILD)/compare_native
 	@test -n "$(WEIGHTS)" -a -n "$(FIXTURES)" -a -n "$(BASELINE)" -a -n "$(MODE)" || { echo 'SKIP: explicit WEIGHTS FIXTURES BASELINE MODE required (not a pass)'; exit 77; }
 	./$(BUILD)/compare_native check "$(WEIGHTS)" "$(MODE)" "$(BASELINE)" $(foreach n,6 24 150 248,"$(FIXTURES)/prefill$(n).ids" "$(FIXTURES)/prefill$(n).safetensors")
 endif
+
+# Model-free POSIX host foundation; never links the production inference runtime.
+SERVICE_SOURCES = service/session.c src/tokenizer_json.c
+SERVICE_HEADERS = service/session.h src/tokenizer_json.h
+SERVICE_COMMIT = $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+SERVICE_DIRTY = $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo false || echo true)
+$(BUILD)/test_service_server: service/http.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"$(SERVICE_COMMIT)"' -DSERVICE_DIRTY='"$(SERVICE_DIRTY)"' $(LDFLAGS) service/http.c $(SERVICE_SOURCES) -o $@ -pthread
+$(BUILD)/test_service_session: tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_session.c $(SERVICE_SOURCES) -o $@ -pthread
+$(BUILD)/test_service_transport: tests/test_service_transport.c service/http.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_transport.c $(SERVICE_SOURCES) -o $@ -pthread
+.PHONY: service-protocol-test service-test
+core-test: service-protocol-test
+service-protocol-test: $(BUILD)/test_service_session
+	./$(BUILD)/test_service_session
+# Python is optional test/client tooling, not a native runtime dependency.
+service-test: service-protocol-test $(BUILD)/test_service_server $(BUILD)/test_service_transport
+	./$(BUILD)/test_service_transport
+	python3 tests/test_service_http.py ./$(BUILD)/test_service_server

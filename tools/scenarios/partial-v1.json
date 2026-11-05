@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "mode": "controlled_protocol_only",
+  "operations": [
+    {"op":"create","expect":{"state":"ready"}},
+    {"op":"message","content":"hi","expect":{"logical_tokens":2}},
+    {"op":"generate","id":"partial-a","budget":3,"expect":{"text":"A","state":"partial","logical_tokens":5,"committed_tokens":4,"pending_tokens":1}},
+    {"op":"pause","seconds":0.05},
+    {"op":"continue","id":"partial-b","budget":7,"expect":{"text":"€😀Z","state":"ready","logical_tokens":12,"committed_tokens":11,"pending_tokens":1}},
+    {"op":"close","expect":{"state":"closed"}}
+  ]
+}

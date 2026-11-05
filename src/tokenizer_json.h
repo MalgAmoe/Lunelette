@@ -19,6 +19,9 @@ typedef struct {
     unsigned capacity;
 } tj_document;
 int tj_read(const char *path, tj_document *doc);
+/* Copies bounded input; document owns decoded storage. Same strict grammar as files.
+ * data must be a valid pointer even when length is zero; doc must be non-NULL. */
+int tj_read_memory(const void *data, size_t length, tj_document *doc);
 void tj_free(tj_document *doc);
 unsigned tj_field(const tj_document *doc, unsigned object, const char *key);
 int tj_integer(const tj_document *doc, unsigned node, unsigned *value);

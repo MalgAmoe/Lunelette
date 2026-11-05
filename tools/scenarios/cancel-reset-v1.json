@@ -1,0 +1,12 @@
+{
+  "version":1,
+  "mode":"controlled_protocol_only",
+  "operations":[
+    {"op":"create"},
+    {"op":"generate","id":"warm","budget":1,"expect":{"text":"A","state":"partial"}},
+    {"op":"cancel","id":"cancelled","budget":100,"expect":{"event":"cancelled","state":"needs_reset"}},
+    {"op":"reset","expect":{"state":"ready","logical_tokens":0,"pending_tokens":0}},
+    {"op":"generate","id":"after-reset","budget":10,"expect":{"text":"A€😀Z","state":"ready","logical_tokens":10}},
+    {"op":"close"}
+  ]
+}

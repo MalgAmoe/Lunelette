@@ -140,3 +140,16 @@ prefill, real multi-step cached decode, reset/reuse and near-256 comparisons for
 both MPS and custom. Keep the frozen external tolerance and raw mismatch vectors;
 resolve acceptance separately rather than quietly loosening a failing gate.
 Native FP8/W8A8 execution and resident-memory optimizations are out of scope.
+
+## Real-workload service development
+
+The [builder specification](docs/real-workload-spec.md) defines the next phase;
+it is a target, not a list of completed features. The
+[delivery plan](docs/real-workload-plan.md) and
+[M1 protocol guide](docs/real-workload-m1.md) describe the current foundation.
+
+M1 provides a native loopback **test service with a deterministic generator**,
+model-free state/transport tests, and a standard-library Python scenario client.
+It does not load weights or perform inference. Real resident-model integration,
+authoritative conversation framing and numerical/session gates remain later work.
+Protocol-test success is not model task success or performance evidence.
