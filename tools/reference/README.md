@@ -10,11 +10,18 @@ Run all documented commands from the repository root. Supply explicit paths to
 weights and fixtures; repository-local ignored `models/` and `fixtures/` paths in
 examples are placeholders, not required bundled assets.
 
+Current maintained consumers require **fresh fixtures from the official HF-layout
+FP8 checkpoint**, not the archived BF16 oracles. FP32 weight reconstruction must
+multiply decoded E4M3 by widened BF16 weight_scale_inv without BF16 rounding.
+Validate but do not use activation_scale. Include true cached-decode trajectories,
+not full-prefix replays; see [current validation](../../docs/validation.md).
+
 ## Maintained consumers and contracts
 
 | Optional consumer | Schema, commands and evidence |
 |---|---|
 | `compare_embeddings`, `make integration` | [Embedding bit comparison](../../docs/validation.md#optional-real-weight-validation) |
+| `compare_fp8` | [Exact reconstructed-weight hashes](../../docs/validation.md#current-mixed-checkpoint-validation) |
 | `compare_metal` | [Metal schema and verification](../../docs/metal.md#verification) |
 
 CPU projection/attention/block/forward/cache/generation consumers were retired

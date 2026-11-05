@@ -68,10 +68,10 @@ int lunelette_tokenizer_decode(const lunelette_tokenizer *tokenizer,
 }
 
 int test_metadata_open(lunelette_metal_weights *weights, const char *first,
-    const char *second, char *error, size_t capacity)
+    char *error, size_t capacity)
 {
     (void)weights;
-    CHECK(strcmp(first, "first") == 0 && strcmp(second, "second") == 0);
+    CHECK(strcmp(first, "first") == 0);
     opens++;
     if (metadata_fails) {
         snprintf(error, capacity, "deliberate metadata rejection");
@@ -87,10 +87,9 @@ void test_metadata_close(lunelette_metal_weights *weights)
 }
 
 lunelette_metal *lunelette_metal_create_with_options(const char *first,
-    const char *second, const lunelette_metal_options *options, char *error, size_t capacity)
+    const lunelette_metal_options *options, char *error, size_t capacity)
 {
     (void)first;
-    (void)second;
     (void)options;
     creates++;
     snprintf(error, capacity, "deliberate GPU creation rejection");
@@ -126,7 +125,7 @@ int lunelette_metal_decode(lunelette_metal *metal, int64_t token,
 int main(void)
 {
     char *args[] = {"test", "--tokenizer", "fake",
-        "--prompt", "fake", "--weights", "first", "--weights2", "second",
+        "--prompt", "fake", "--weights", "first",
         "--dump-output-ids", "--max-new-tokens", "0"};
     int argc = (int)(sizeof args / sizeof args[0]);
     for (int full = 0; full < 2; full++) {

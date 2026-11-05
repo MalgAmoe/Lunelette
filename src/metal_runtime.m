@@ -1,6 +1,9 @@
 #include "metal_internal.h"
 #include "metal_shader.h"
 #include <mach/mach.h>
+#include <errno.h>
+#include <time.h>
+#include "metal_memory_guard.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,19 +19,12 @@ static LuneletteMetalOwner *get_owner(lunelette_metal *context)
     return context ? (__bridge LuneletteMetalOwner *)context->owner : nil;
 }
 
-static int memory_guard(uint64_t weights_bytes, char *error, size_t capacity)
+static int memory_available(void *context, uint64_t *available)
 {
-    /* Conservative M3 bound: <256MiB scratch +52MiB KV +2GiB reserve.
-     * Upload expands directly into final shared buffers with bounded reader scratch.
-     * recommendedMaxWorkingSetSize is guidance, never an allocation guarantee. */
-    uint64_t peak = weights_bytes + 310ULL * 1024 * 1024 + 2ULL * 1024 * 1024 * 1024;
+    (void)context;
     vm_statistics64_data_t statistics;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     vm_size_t page_size;
-    if (peak > 24ULL * 1024 * 1024 * 1024) {
-        snprintf(error, capacity, "Metal memory guard: estimated peak exceeds 24GiB");
-        return -1;
-    }
     host_t host = mach_host_self();
     kern_return_t statistics_status = host_statistics64(host, HOST_VM_INFO64,
         (host_info64_t)&statistics, &count);
@@ -37,18 +33,43 @@ static int memory_guard(uint64_t weights_bytes, char *error, size_t capacity)
         mach_port_deallocate(mach_task_self(), host);
     }
     if (statistics_status != KERN_SUCCESS || page_status != KERN_SUCCESS) {
-        snprintf(error, capacity, "Metal memory guard: headroom query failed");
         return -1;
     }
-    uint64_t available = ((uint64_t)statistics.free_count + statistics.inactive_count +
-        statistics.speculative_count) * page_size;
-    if (available <= peak) {
-        snprintf(error, capacity, "Metal needs conservative %.2f GiB available; found %.2f GiB. "
-            "Release other models or wait for VM reclamation before retrying",
-            peak / 1073741824.0, available / 1073741824.0);
+    uint64_t pages = (uint64_t)statistics.free_count + statistics.inactive_count +
+        statistics.speculative_count;
+    if (page_size == 0 || pages > UINT64_MAX / page_size) {
         return -1;
     }
+    *available = pages * page_size;
     return 0;
+}
+
+static int memory_now(void *context, uint64_t *now)
+{
+    (void)context;
+    struct timespec time;
+    if (clock_gettime(CLOCK_MONOTONIC, &time) != 0 || time.tv_sec < 0 ||
+        time.tv_nsec < 0 || time.tv_nsec >= 1000000000L ||
+        (uint64_t)time.tv_sec > (UINT64_MAX - (uint64_t)time.tv_nsec) / 1000000000ULL) {
+        return -1;
+    }
+    *now = (uint64_t)time.tv_sec * 1000000000ULL + (uint64_t)time.tv_nsec;
+    return 0;
+}
+
+static int memory_sleep(void *context, uint64_t nanoseconds)
+{
+    (void)context;
+    struct timespec delay = {0, (long)nanoseconds};
+    /* EINTR returns to the policy to remeasure remaining time, never restarting
+     * a full interval or resetting the deadline. */
+    return nanosleep(&delay, NULL) == 0 || errno == EINTR ? 0 : -1;
+}
+
+static int memory_guard(uint64_t weights_bytes, char *error, size_t capacity)
+{
+    metal_memory_probe probe = {NULL, memory_available, memory_now, memory_sleep};
+    return metal_memory_guard(weights_bytes, probe, error, capacity);
 }
 
 int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, size_t capacity)
@@ -132,13 +153,13 @@ static int allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capa
     return 0;
 }
 
-lunelette_metal *lunelette_metal_create(const char *first, const char *second,
+lunelette_metal *lunelette_metal_create(const char *path,
     char *error, size_t capacity)
 {
-    return lunelette_metal_create_with_options(first, second, NULL, error, capacity);
+    return lunelette_metal_create_with_options(path, NULL, error, capacity);
 }
 
-lunelette_metal *lunelette_metal_create_with_options(const char *first, const char *second,
+lunelette_metal *lunelette_metal_create_with_options(const char *path,
     const lunelette_metal_options *options, char *error, size_t capacity)
 {
     char fallback[512];
@@ -153,7 +174,7 @@ lunelette_metal *lunelette_metal_create_with_options(const char *first, const ch
     }
     @autoreleasepool {
         lunelette_metal_weights staged;
-        if (lunelette_metal_weights_open(&staged, first, second, error, capacity) != 0) {
+        if (lunelette_metal_weights_open(&staged, path, error, capacity) != 0) {
             return NULL;
         }
         lunelette_metal *context = NULL;
@@ -182,9 +203,9 @@ lunelette_metal *lunelette_metal_create_with_options(const char *first, const ch
                     staged.weights[i].tensor->name);
                 goto cleanup;
             }
-            if (st_load_bf16(staged.weights[i].file, staged.weights[i].tensor,
+            if (lunelette_metal_weights_load(&staged, i,
                     owner->weights[i].contents, staged.weights[i].elements) != 0) {
-                snprintf(error, capacity, "Metal BF16 read failed: %s",
+                snprintf(error, capacity, "Metal weight decode/read failed: %s",
                     staged.weights[i].tensor->name);
                 goto cleanup;
             }

@@ -4,11 +4,50 @@ All shell commands in this guide run from the repository root, not `docs/`.
 External weights and fixtures are optional, caller-supplied, and not bundled or
 downloaded automatically. Paths in examples are repository-local placeholders.
 
+## Current mixed-checkpoint validation
+
+Only the official single-file HF FP8 checkpoint is supported by the maintained
+runtime. Old BF16 fixtures do not validate it. Supply fresh FP32 fixtures with
+provenance, actual cached decode and the schemas below or in [Metal](metal.md).
+
+```sh
+make test
+make sanitize
+make BUILD=build/ndebug CFLAGS='-std=c11 -O2 -DNDEBUG -Wall -Wextra -Wpedantic' test
+make integration \
+  WEIGHTS=models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  FIXTURES=fixtures/fp8
+make build/compare_fp8
+build/compare_fp8 models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  fixtures/fp8/decoded-sha256.txt
+```
+
+Integration reads `embedding6`, `embedding24`, `embedding150`, `embedding248`
+safetensors fixtures with `input_ids` I64 `[1,N]` and `hidden_0` F32 `[1,N,3072]`.
+The optional macOS host-only `compare_fp8` uses system CommonCrypto SHA256 to
+compare all 236 decoded FP32 weight tensors (including tied embedding/head),
+without GPU execution or a complete intermediate model. Its input is one
+`tensor_name lowercase_sha256` line per weight, hashing little-endian contiguous
+FP32 output-major bytes. Reject duplicate or missing entries. Use an independent
+Python expansion of the same checkpoint, not hashes calculated by C itself.
+All 364 companion values are actually read and validated before comparison.
+
+The external arithmetic threshold remains `2e-4 + 1e-4*abs(reference)` with
+finite logits and exact argmax. Current FP8-derived strict longer-context
+comparisons fail, so numerical-baseline acceptance is pending. A finite or greedy
+match is not a strict numerical pass. Capture raw failing vectors and counts;
+do not silently recalibrate the bound or change engine math as part of this port.
+
+## Historical material below — not current invocation instructions
+
+The remaining examples and measurements describe retired BF16/CPU contracts.
+They are preserved as historical evidence, not commands for the maintained loader.
+
 ## Reading the evidence
 
 The measurements and completed checks below are historical records carried forward
-from the pre-cleanup README, not checks rerun by this documentation pass. Current
-full-depth acceptance is defined in [the bounded contract](full-depth-validation.md);
+from the pre-cleanup README, not checks rerun by this documentation pass. Historical
+full-depth acceptance was defined in [the bounded contract](full-depth-validation.md);
 strict hidden-state failure counts remain diagnostics, not erased evidence.
 Isolated-stage and last-logit tolerances remain unchanged. These external fixtures
 were generated previously; their generator and outputs are not bundled here.

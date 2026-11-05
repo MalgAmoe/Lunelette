@@ -1,3 +1,4 @@
+#include <math.h>
 #include "safetensors.h"
 #include <stdlib.h>
 #include <string.h>
@@ -141,7 +142,9 @@ static int parse_tensor(json_parser *j, st_tensor *t)
             if (!parse_string(j, dtype, sizeof dtype)) {
                 return 0;
             }
-            if (!strcmp(dtype, "BF16")) {
+            if (!strcmp(dtype, "F8_E4M3")) {
+                t->dtype = ST_F8_E4M3;
+            } else if (!strcmp(dtype, "BF16")) {
                 t->dtype = ST_BF16;
             } else if (!strcmp(dtype, "F32")) {
                 t->dtype = ST_F32;
@@ -400,7 +403,7 @@ int st_open(st_file *s, const char *path, char *error, size_t capacity)
     if (fread(header, 1, (size_t)n, s->file) != n) {
         goto fail;
     }
-    why = "invalid/unsupported header: require unique ASCII names, BF16/F32/I64, rank <=8";
+    why = "invalid/unsupported header: require unique ASCII names, F8_E4M3/BF16/F32/I64, rank <=8";
     if (parse_header(s, header, (size_t)n)) {
         goto fail;
     }
@@ -475,7 +478,7 @@ int st_embedding(st_file *s, const st_tensor *t, int64_t token, float *out, size
 int st_load_bf16(st_file *s, const st_tensor *t, float *out, size_t count)
 {
     if (!t || !out || t->dtype != ST_BF16 || count > SIZE_MAX / sizeof(float) ||
-        t->end < t->begin || (t->end - t->begin) / 2 != count ||
+        t->end < t->begin || t->end - t->begin != count * 2 ||
         st_read(s, t, 0, NULL, 0)) {
         return -1;
     }
@@ -493,6 +496,51 @@ int st_load_bf16(st_file *s, const st_tensor *t, float *out, size_t count)
         for (size_t i = 0; i < chunk; i++) {
             out[offset + i] = st_bf16_to_f32((uint16_t)(bytes[2 * i] |
                                                       (unsigned)bytes[2 * i + 1] << 8));
+        }
+        offset += chunk;
+    }
+    return 0;
+}
+
+float st_f8_e4m3_to_f32(unsigned char bits)
+{
+    unsigned exponent = (bits >> 3) & 15;
+    unsigned fraction = bits & 7;
+    float value;
+    if (exponent == 15 && fraction == 7) {
+        return NAN;
+    }
+    if (exponent == 0) {
+        value = ldexpf((float)fraction, -9);
+    } else {
+        value = ldexpf(1.0f + (float)fraction / 8.0f, (int)exponent - 7);
+    }
+    return bits & 128 ? -value : value;
+}
+
+int st_load_fp8(st_file *s, const st_tensor *t, float scale, float *out, size_t count)
+{
+    if (!t || !out || t->dtype != ST_F8_E4M3 || !isfinite(scale) || scale <= 0 ||
+        count > SIZE_MAX / sizeof(float) || t->end < t->begin ||
+        t->end - t->begin != count || st_read(s, t, 0, NULL, 0)) {
+        return -1;
+    }
+    unsigned char bytes[65536];
+    for (size_t offset = 0; offset < count;) {
+        size_t chunk = count - offset;
+        if (chunk > sizeof bytes) {
+            chunk = sizeof bytes;
+        }
+        if (st_read(s, t, offset, bytes, chunk) != 0) {
+            return -1;
+        }
+        for (size_t i = 0; i < chunk; i++) {
+            /* Both operands are FP32. Never round the reconstructed weight to BF16. */
+            float value = st_f8_e4m3_to_f32(bytes[i]) * scale;
+            if (!isfinite(value)) {
+                return -1;
+            }
+            out[offset + i] = value;
         }
         offset += chunk;
     }

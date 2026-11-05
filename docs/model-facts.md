@@ -15,11 +15,12 @@ The model position bound is 262144; exposing that fact does not implement a
 262144-token forward or cache. Tokenizer vocabulary/encoding restrictions remain
 owned by the tokenizer, even where a numeric limit happens to match.
 
-`metal_weights.c` validates required BF16 names exactly once across the two
-supplied shards, with expected shapes, before GPU allocation. Unrelated vision
-tensors are ignored. The resident runtime owns expanded FP32 weights, scratch
-and KV storage. Host parsing, metadata, tokenization, greedy policy and YaRN
-preparation remain CPU work within this one engine, not separate backends.
+`metal_weights.c` validates the official single-file HF mixed checkpoint:
+182 F8_E4M3 projections, 53 BF16 norms and BF16 embedding/tied head, exact shapes,
+and two positive finite rank-0 BF16 companion scales per projection. Unknown text
+names fail; vision/projector metadata is parsed but not executed or architecture-validated.
+FP8 values are widened and multiplied by widened weight_scale_inv in FP32.
+Activation scales are validated but unused. This is not W8A8 execution.
 
 The former CPU forward/cache implementation and validator were retired after
 `4d4f8f8`; [historical contracts](cpu-runtime.md) and numerical provenance remain

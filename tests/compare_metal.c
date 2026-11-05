@@ -14,6 +14,28 @@
 #include <time.h>
 #include <unistd.h>
 
+const float *test_metal_snapshot(lunelette_metal *runtime, int normalized);
+
+static const char *capture_mode = "mps";
+
+static int preserve_vector(const char *fixture, int cycle, size_t step,
+    const char *tensor, const float *values, size_t count)
+{
+    char path[4096];
+    int length = snprintf(path, sizeof path, "%s.%s-cycle%d-step%zu-%s.f32", fixture,
+        capture_mode, cycle, step, tensor);
+    if (length < 0 || (size_t)length >= sizeof path) {
+        return -1;
+    }
+    FILE *file = fopen(path, "wb");
+    if (!file) {
+        return -1;
+    }
+    int failed = fwrite(values, sizeof(float), count, file) != count;
+    failed |= fclose(file) != 0;
+    return failed ? -1 : 0;
+}
+
 static uint64_t little_u64(const unsigned char *bytes)
 {
     uint64_t value = 0;
@@ -43,18 +65,37 @@ static int compare(const float *actual, const unsigned char *reference,
     size_t count, double *maximum)
 {
     *maximum = 0;
+    size_t mismatches = 0;
+    size_t finite = 0;
+    double max_relative = 0;
+    size_t actual_argmax = 0, reference_argmax = 0;
     for (size_t i = 0; i < count; i++) {
         float expected = little_float(reference + i * 4);
         double difference = fabs((double)actual[i] - expected);
+        finite += isfinite(actual[i]) != 0;
         if (!isfinite(actual[i]) || !isfinite(expected) ||
             difference > 2e-4 + 1e-4 * fabs(expected)) {
-            return -1;
+            mismatches++;
         }
         if (difference > *maximum) {
             *maximum = difference;
         }
+        double relative = difference / fmax(fabs(expected), 1e-30);
+        if (relative > max_relative) {
+            max_relative = relative;
+        }
+        if (actual[i] > actual[actual_argmax]) {
+            actual_argmax = i;
+        }
+        if (expected > little_float(reference + reference_argmax * 4)) {
+            reference_argmax = i;
+        }
     }
-    return 0;
+    if (count > 1) {
+        printf("metrics finite%zu/%zu mismatches%zu maxabs%.9g maxrel%.9g argmax%zu/%zu\n",
+            finite, count, mismatches, *maximum, max_relative, actual_argmax, reference_argmax);
+    }
+    return mismatches ? -1 : 0;
 }
 
 /* A numerical fixture must contain at least one oracle comparison. */
@@ -112,6 +153,7 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
     FILE *input = fopen(ids_path, "r");
     unsigned char *reference = NULL;
     int status = -1;
+    int numerical_failure = 0;
     int64_t ids[LUNELETTE_CONTEXT_LIMIT];
     size_t count = 0;
     if (!input) {
@@ -141,7 +183,7 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
             fixture_path);
         goto cleanup;
     }
-    reference = malloc(LUNELETTE_MODEL_VOCAB * sizeof(float));
+    reference = malloc(LUNELETTE_CONTEXT_LIMIT * LUNELETTE_MODEL_HIDDEN * sizeof(float));
     if (!reference) {
         goto cleanup;
     }
@@ -174,11 +216,37 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
             st_read(&fixture, tensor, 0, reference, LUNELETTE_MODEL_VOCAB * 4) != 0) {
             goto cleanup;
         }
+        int step_failure = 0;
         double maximum;
+        printf("tensor logits case%s cycle%d step%zu\n", fixture_path, cycle, step);
         if (compare(logits, reference, LUNELETTE_MODEL_VOCAB, &maximum) != 0) {
-            snprintf(error, sizeof error, "Strict logits mismatch: %s cycle%d step%zu",
-                fixture_path, cycle, step);
-            goto cleanup;
+            if (preserve_vector(fixture_path, cycle, step, "logits", logits,
+                    LUNELETTE_MODEL_VOCAB) != 0) {
+                snprintf(error, sizeof error, "Cannot preserve mismatch vector");
+                goto cleanup;
+            }
+            step_failure = 1;
+        }
+        for (int normalized = 0; normalized < 2; normalized++) {
+            snprintf(name, sizeof name, normalized ? "final_norm_%zu" : "block_25_%zu", step);
+            tensor = st_find(&fixture, name);
+            size_t rows = step ? 1 : count;
+            size_t elements = rows * LUNELETTE_MODEL_HIDDEN;
+            if (!tensor || tensor->dtype != ST_F32 || tensor->rank != 3 ||
+                tensor->shape[0] != 1 || tensor->shape[1] != rows ||
+                tensor->shape[2] != LUNELETTE_MODEL_HIDDEN ||
+                st_read(&fixture, tensor, 0, reference, elements * sizeof(float)) != 0) {
+                goto cleanup;
+            }
+            printf("tensor %s case%s cycle%d step%zu\n", name, fixture_path, cycle, step);
+            if (compare(test_metal_snapshot(runtime, normalized), reference, elements,
+                    &maximum) != 0) {
+                if (preserve_vector(fixture_path, cycle, step, name,
+                        test_metal_snapshot(runtime, normalized), elements) != 0) {
+                    goto cleanup;
+                }
+                step_failure = 1;
+            }
         }
         size_t chosen = 0;
         for (size_t i = 1; i < LUNELETTE_MODEL_VOCAB; i++) {
@@ -187,14 +255,18 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
             }
         }
         unsigned char expected[8];
-        if (st_read(&fixture, generated, step * 8, expected, 8) != 0 ||
-            little_u64(expected) != chosen) {
-            snprintf(error, sizeof error, "Greedy ID mismatch: %s step%zu", fixture_path, step);
+        if (st_read(&fixture, generated, step * 8, expected, 8) != 0) {
             goto cleanup;
         }
-        previous = (int64_t)chosen;
-        printf("PASS %s cycle%d step%zu id%zu maxabs%.9g seconds%.6f\n",
-            fixture_path, cycle, step, chosen, maximum, elapsed);
+        if (little_u64(expected) != chosen) {
+            step_failure = 1;
+        }
+        /* Teacher-force the oracle trajectory even when native argmax differs. */
+        numerical_failure |= step_failure;
+        previous = (int64_t)little_u64(expected);
+        printf("%s %s cycle%d step%zu id%zu reference%lld maxabs%.9g seconds%.6f\n",
+            step_failure ? "FAIL" : "PASS", fixture_path, cycle, step, chosen,
+            (long long)previous, maximum, elapsed);
         fflush(stdout);
         (*steps)++;
         if (step == 0) {
@@ -206,7 +278,7 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
             }
         }
     }
-    if (count == LUNELETTE_CONTEXT_LIMIT - 1 && generated->shape[0] == 1) {
+    if (count + generated->shape[0] == LUNELETTE_CONTEXT_LIMIT) {
         /* Secondary state check, not an additional independent oracle logit step:
          * fill the final KV slot, reject overflow, then next case/cycle resets. */
         if (lunelette_metal_decode(runtime, previous, &logits, error, sizeof error) != 0 ||
@@ -217,7 +289,10 @@ static int run_case(lunelette_metal *runtime, const char *ids_path, const char *
         printf("PASS capacity256 append then reject %s cycle%d\n", fixture_path, cycle);
         fflush(stdout);
     }
-    status = 0;
+    status = numerical_failure ? -1 : 0;
+    if (numerical_failure) {
+        snprintf(error, sizeof error, "Strict reference comparison failed: %s", fixture_path);
+    }
 cleanup:
     if (status != 0) {
         fprintf(stderr, "%s\n", error);
@@ -238,15 +313,16 @@ int main(int argc, char **argv)
     lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
     if (argc > 1 && strcmp(argv[argc - 1], "--metal-prefill=custom") == 0) {
         options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
+        capture_mode = "custom";
         argc--;
     }
-    if (argc < 5 || (argc - 3) % 2 != 0) {
-        fputs("usage: compare_metal SHARD1 SHARD2 IDS_FILE FIXTURE [IDS_FILE FIXTURE ...] [--metal-prefill=custom]\n", stderr);
+    if (argc < 4 || (argc - 2) % 2 != 0) {
+        fputs("usage: compare_metal MODEL.safetensors IDS_FILE FIXTURE [IDS_FILE FIXTURE ...] [--metal-prefill=custom]\n", stderr);
         return 1;
     }
     char error[512];
     double start = seconds();
-    lunelette_metal *runtime = lunelette_metal_create_with_options(argv[1], argv[2],
+    lunelette_metal *runtime = lunelette_metal_create_with_options(argv[1],
         &options, error, sizeof error);
     if (!runtime) {
         fprintf(stderr, "%s\n", error);
@@ -256,11 +332,10 @@ int main(int argc, char **argv)
     fflush(stdout);
     int status = 0;
     size_t steps = 0;
-    for (int cycle = 0; cycle < 2 && status == 0; cycle++) {
-        for (int i = 3; i < argc; i += 2) {
+    for (int cycle = 0; cycle < 2; cycle++) {
+        for (int i = 2; i < argc; i += 2) {
             if (run_case(runtime, argv[i], argv[i + 1], cycle, &steps) != 0) {
                 status = 1;
-                break;
             }
         }
     }
@@ -272,17 +347,10 @@ int main(int argc, char **argv)
     if (status == 0) {
         /* Recreate in the same process: exercises ARC owner/reader teardown,
          * not just the OS reclaiming allocations at process exit. */
-        /* Driver/VM page reclamation can lag ARC/Metal buffer release. Preserve
-         * the conservative guard; allow at most three one-second settling waits. */
+        /* A guard refusal is final: do not retry or lower headroom. */
         runtime = NULL;
-        for (size_t attempt = 0; attempt < 3; attempt++) {
-            sleep(1);
-            runtime = lunelette_metal_create_with_options(argv[2], argv[1],
-                &options, error, sizeof error);
-            if (runtime || !strstr(error, "Metal needs conservative")) {
-                break;
-            }
-        }
+        runtime = lunelette_metal_create_with_options(argv[1],
+            &options, error, sizeof error);
         int64_t ids[] = {1, 42};
         const float *logits = NULL;
         if (!runtime || lunelette_metal_prefill(runtime, ids, 2, &logits,
@@ -290,7 +358,7 @@ int main(int argc, char **argv)
             fprintf(stderr, "Metal recreate failed: %s\n", error);
             status = 1;
         } else {
-            puts("PASS destroy/recreate reversed shards and prefill (state check, not oracle)");
+            puts("PASS destroy/recreate single checkpoint and prefill (state check, not oracle)");
         }
         lunelette_metal_destroy(runtime);
     }

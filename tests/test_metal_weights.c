@@ -1,4 +1,5 @@
 #include "metal_weights.h"
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,135 +11,125 @@
     } \
 } while (0)
 
-static void tensor(st_tensor *value, const char *name, size_t rows, size_t cols)
+static void descriptor(st_tensor *tensor, const char *name, size_t rows, size_t cols,
+    st_dtype dtype)
 {
-    snprintf(value->name, sizeof value->name, "%s", name);
-    value->dtype = ST_BF16;
-    value->rank = cols ? 2 : 1;
-    value->shape[0] = rows;
-    value->shape[1] = cols;
-}
-
-/* Expected acceptance/rejection is asserted directly at each call below.
- * Parser rejects within-shard duplicates; layout rejects cross-shard duplicates. */
-static void duplicate_shard_test(const char *path, const char *name)
-{
-    char header[1024];
-    int length = snprintf(header, sizeof header,
-        "{\"%s\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[0,2]},"
-        "\"%s\":{\"dtype\":\"BF16\",\"shape\":[1],\"data_offsets\":[2,4]}}",
-        name, name);
-    CHECK(length > 0 && (size_t)length < sizeof header);
-    FILE *file = fopen(path, "wb");
-    CHECK(file != NULL);
-    for (size_t i = 0; i < 8; i++) {
-        CHECK(fputc((int)(((uint64_t)length >> (8 * i)) & 255), file) != EOF);
-    }
-    CHECK(fwrite(header, 1, (size_t)length, file) == (size_t)length);
-    CHECK(fwrite("\0\0\0\0", 1, 4, file) == 4);
-    CHECK(fclose(file) == 0);
-    char error[512];
-    st_file parsed;
-    CHECK(st_open(&parsed, path, error, sizeof error) != 0);
-    CHECK(strstr(error, "unique") != NULL);
-    CHECK(parsed.file == NULL && parsed.tensors == NULL);
-    st_close(&parsed);
-    lunelette_metal_weights metal;
-    CHECK(lunelette_metal_weights_open(&metal, path, path, error, sizeof error) != 0);
-    CHECK(strstr(error, "unique") != NULL);
-    CHECK(metal.files[0].file == NULL && metal.files[0].tensors == NULL);
-    CHECK(metal.files[1].file == NULL && metal.files[1].tensors == NULL);
-    lunelette_metal_weights_close(&metal);
-    CHECK(remove(path) == 0);
+    snprintf(tensor->name, sizeof tensor->name, "%s", name);
+    tensor->dtype = dtype;
+    tensor->rank = rows ? (cols ? 2 : 1) : 0;
+    tensor->shape[0] = rows;
+    tensor->shape[1] = cols;
+    tensor->end = (rows ? rows * (cols ? cols : 1) : 1) * dtype;
 }
 
 int main(int argc, char **argv)
 {
-    CHECK(argc <= 2);
-    const char *path = argc == 2 ? argv[1] : "build/test-metal-duplicates.tmp";
-    duplicate_shard_test(path, "language_model.model.embed_tokens.weight");
-    duplicate_shard_test(path, "vision.unrelated.weight");
+    (void)argc;
+    (void)argv;
     lunelette_metal_weights weights = {0};
-    st_tensor tensors[LUNELETTE_METAL_WEIGHT_COUNT] = {0};
-    tensor(&tensors[0], "language_model.model.embed_tokens.weight",
-        LUNELETTE_MODEL_VOCAB, LUNELETTE_MODEL_HIDDEN);
-    tensor(&tensors[1], "language_model.model.norm.weight", LUNELETTE_MODEL_HIDDEN, 0);
+    st_tensor tensors[LUNELETTE_METAL_WEIGHT_COUNT + 364 + 1] = {0};
+    descriptor(&tensors[0], "language_model.model.embed_tokens.weight",
+        LUNELETTE_MODEL_VOCAB, LUNELETTE_MODEL_HIDDEN, ST_BF16);
+    descriptor(&tensors[1], "language_model.model.norm.weight", LUNELETTE_MODEL_HIDDEN,
+        0, ST_BF16);
     size_t index = 2;
+    size_t scales = LUNELETTE_METAL_WEIGHT_COUNT;
     for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
         for (size_t i = 0; i < LUNELETTE_MODEL_BLOCK_WEIGHTS; i++) {
             char name[ST_MAX_NAME];
             const lunelette_model_weight *fact = &lunelette_model_block_weights[i];
-            snprintf(name, sizeof name, "language_model.model.layers.%zu.%s", layer, fact->suffix);
-            tensor(&tensors[index++], name, fact->rows, fact->cols);
+            snprintf(name, sizeof name, "language_model.model.layers.%zu.%s", layer,
+                fact->suffix);
+            descriptor(&tensors[index++], name, fact->rows, fact->cols,
+                fact->cols ? ST_F8_E4M3 : ST_BF16);
+            if (fact->cols) {
+                const char *suffixes[] = {"weight_scale_inv", "activation_scale"};
+                for (size_t j = 0; j < 2; j++) {
+                    char companion[ST_MAX_NAME];
+                    snprintf(companion, sizeof companion, "%.*s%s",
+                        (int)(strlen(name) - 6), name, suffixes[j]);
+                    descriptor(&tensors[scales++], companion, 0, 0, ST_BF16);
+                }
+            }
         }
     }
-    /* Parser byte-range validation is covered by test_safetensors. These borrowed
-     * descriptors test only complete text metadata, not fabricated weight data. */
-    weights.files[0].tensors = tensors;
-    weights.files[0].count = 100;
-    weights.files[1].tensors = tensors + 100;
-    weights.files[1].count = LUNELETTE_METAL_WEIGHT_COUNT - 100;
+    CHECK(scales == LUNELETTE_METAL_WEIGHT_COUNT + 364);
+    weights.file.tensors = tensors;
+    weights.file.count = scales;
     char error[512];
     CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
-    CHECK(weights.bytes == 3429006336ULL * sizeof(float));
-    CHECK(weights.weights[index - 1].file == &weights.files[1]);
-    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
-    CHECK(weights.bytes == 3429006336ULL * sizeof(float));
-    for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+    CHECK(weights.bytes == 13716025344ULL);
+    for (size_t i = 0; i < scales; i++) {
         char saved_name[ST_MAX_NAME];
         memcpy(saved_name, tensors[i].name, sizeof saved_name);
-        snprintf(tensors[i].name, sizeof tensors[i].name, "unrelated.tensor");
+        strcpy(tensors[i].name, "unrelated");
         CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         memcpy(tensors[i].name, saved_name, sizeof saved_name);
-        tensors[i].dtype = ST_F32;
+        st_dtype saved = tensors[i].dtype;
+        tensors[i].dtype = saved == ST_F8_E4M3 ? ST_BF16 : ST_F32;
         CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         CHECK(strstr(error, tensors[i].name) != NULL);
-        tensors[i].dtype = ST_BF16;
-        tensors[i].shape[0]++;
-        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
-        tensors[i].shape[0]--;
+        tensors[i].dtype = saved;
         tensors[i].rank++;
         CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
         tensors[i].rank--;
-        if (tensors[i].rank == 2) {
-            tensors[i].shape[1]++;
+        if (tensors[i].rank) {
+            tensors[i].shape[0]++;
             CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
-            tensors[i].shape[1]--;
+            tensors[i].shape[0]--;
+            if (tensors[i].rank == 2) {
+                tensors[i].shape[1]++;
+                CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
+                tensors[i].shape[1]--;
+            }
         }
     }
-    /* Shard placement is not policy: all required weights may be in one file,
-     * and unrelated (e.g. vision) tensors may have arbitrary metadata. */
-    st_tensor unrelated = {0};
-    snprintf(unrelated.name, sizeof unrelated.name, "vision.unrelated.weight");
-    weights.files[0].count = LUNELETTE_METAL_WEIGHT_COUNT;
-    weights.files[1].tensors = &unrelated;
-    weights.files[1].count = 1;
+    weights.file.count--;
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
+    weights.file.count = scales + 1;
+    descriptor(&tensors[scales], "vision.unrelated.weight", 1, 0, ST_F32);
     CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
-    for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
-        weights.files[1].tensors = &tensors[i];
-        CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
-        CHECK(strstr(error, tensors[i].name) != NULL);
-    }
-    weights.files[0].count = 100;
-    weights.files[1].tensors = tensors + 100;
-    weights.files[1].count = LUNELETTE_METAL_WEIGHT_COUNT - 100;
-    weights.files[1].count--;
+    strcpy(tensors[scales].name, "language_model.unexpected.weight");
     CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
-    weights.files[1].count++;
-    weights.files[1].tensors = tensors;
-    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) != 0);
-    CHECK(strstr(error, "Duplicate") != NULL);
-    /* Do not close the synthetic borrowed descriptors. Real failed open closes
-     * its own descriptors; repeat to catch accidental live/reused handles. */
-    for (size_t i = 0; i < 10; i++) {
-        lunelette_metal_weights failed;
-        CHECK(lunelette_metal_weights_open(&failed, "missing-metal-shard", NULL,
-            error, sizeof error) != 0);
-        lunelette_metal_weights_close(&failed);
-        CHECK(lunelette_metal_weights_open(&failed, "missing-metal-shard",
-            "missing-second-shard", error, sizeof error) != 0);
-        lunelette_metal_weights_close(&failed);
+    weights.file.count = scales;
+
+    /* Actual small scalar payloads, with synthetic projection descriptors: no
+     * model-size sparse file and no GPU. Exercise both companion values. */
+    FILE *payload = tmpfile();
+    CHECK(payload != NULL);
+    CHECK(fwrite("\201\076", 1, 2, payload) == 2); /* BF16 0.251953125 */
+    CHECK(fflush(payload) == 0);
+    weights.file.file = payload;
+    CHECK(lunelette_metal_weights_validate(&weights, error, sizeof error) == 0);
+    CHECK(lunelette_metal_weights_read_scales(&weights, error, sizeof error) == 0);
+    CHECK(weights.weights[3].scale == 0.251953125f);
+    const unsigned bad[] = {0, 0x8000, 0xbf80, 0x7f80, 0xff80, 0x7fc0, 0xffc0};
+    for (size_t j = 0; j < 2; j++) {
+        /* Isolate weight or activation scalar while others use valid bytes. */
+        tensors[LUNELETTE_METAL_WEIGHT_COUNT + j].begin = 2;
+        tensors[LUNELETTE_METAL_WEIGHT_COUNT + j].end = 4;
+        for (size_t k = 0; k < sizeof bad / sizeof bad[0]; k++) {
+            CHECK(fseek(payload, 2, SEEK_SET) == 0);
+            CHECK(fputc(bad[k] & 255, payload) != EOF);
+            CHECK(fputc(bad[k] >> 8, payload) != EOF);
+            CHECK(fflush(payload) == 0);
+            CHECK(lunelette_metal_weights_read_scales(&weights, error, sizeof error) != 0);
+        }
+        tensors[LUNELETTE_METAL_WEIGHT_COUNT + j].begin = 0;
+        tensors[LUNELETTE_METAL_WEIGHT_COUNT + j].end = 2;
     }
-    puts("Metal metadata preflight tests passed (all 26 layers, no weights allocated)");
+    tensors[LUNELETTE_METAL_WEIGHT_COUNT].begin = 4;
+    tensors[LUNELETTE_METAL_WEIGHT_COUNT].end = 6;
+    CHECK(lunelette_metal_weights_read_scales(&weights, error, sizeof error) != 0);
+    CHECK(fclose(payload) == 0);
+    /* Borrowed descriptors aren't passed to close. Failed open owns its cleanup. */
+    lunelette_metal_weights failed;
+    CHECK(lunelette_metal_weights_open(&failed, "missing-model", error, sizeof error) != 0);
+    CHECK(failed.file.file == NULL && failed.file.tensors == NULL && failed.bytes == 0);
+    lunelette_metal_weights_close(&failed);
+    CHECK(lunelette_metal_weights_open(&failed, NULL, error, sizeof error) != 0);
+    CHECK(failed.file.file == NULL && failed.file.tensors == NULL && failed.bytes == 0);
+    lunelette_metal_weights_close(&failed);
+    puts("Mixed FP8/BF16 metadata and actual scalar reads passed (182 FP8, 53 norms, embedding)");
     return 0;
 }

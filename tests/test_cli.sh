@@ -24,6 +24,8 @@ for option in '--backend cpu' '--backend metal' '--backend' '--uncached'; do
     reject $option
     grep 'were retired' cli-test.err >/dev/null
 done
+reject --weights2 second
+grep 'Unknown or duplicate argument' cli-test.err >/dev/null
 reject --prompt
 reject --prompt x
 reject --tokenizer missing --prompt x --raw --system s --dump-prompt-ids

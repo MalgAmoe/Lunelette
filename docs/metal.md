@@ -11,15 +11,13 @@ All shell commands here run from the repository root, not `docs/`.
 ```sh
 make BUILD=build/metal test
 build/metal/lunelette \
-  --weights models/model-00001-of-00002.safetensors \
-  --weights2 models/model-00002-of-00002.safetensors \
+  --weights models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
   --tokenizer models/tekken.json --prompt 'What is 2 + 2?' \
   --max-new-tokens 32 --dump-output-ids
 ```
 
-Supply the exact Ministral-3-3B-Instruct-2512 BF16 checkpoint files yourself;
-no files are downloaded. Either shard order is accepted, and no index file is
-read. Use distinct build directories for different compiler flags.
+Supply the official HF-layout Ministral-3-3B-Instruct-2512-FP8 single checkpoint
+yourself; no files are downloaded and no index file is read. Supply Tekken separately. Use distinct build directories for different compiler flags.
 Other platforms can run `make core-test`, but cannot build the application.
 A build with no supported device
 or insufficient headroom returns an error, never falls back silently.
@@ -30,17 +28,21 @@ The removed `--backend` and `--uncached` selectors fail explicitly. Total return
 prompt plus generated IDs is at most 256. The output budget is
 `min(max_new_tokens, 256 - prompt_count)`; a full prompt or zero budget performs
 no forward. A generated EOS is included in IDs and omitted from decoded text.
-There is no batching, quantization, vision, multi-turn reuse or larger-context
+There is no batching, static W8A8 execution, vision, multi-turn reuse or larger-context
 support. The larger checkpoint position limit is not a supported context claim.
 
 ## Storage and numerical contract
 
-* Unique text weights are resident FP32, expanded directly from bounded BF16
+* Unique text weights are resident FP32, reconstructed directly from bounded mixed FP8/BF16
   reader chunks into final shared Metal buffers. No full host FP32 copy or
   duplicated vocabulary head is retained. The head shares the embedding buffer.
 * All 236 required text tensors (embedding, final norm, nine in each of 26
-  blocks) are checked for BF16 dtype and exact logical shapes before heavy GPU
-  allocation. Duplicate required tensors across shards are rejected.
+  blocks) have exact logical shapes: 182 F8_E4M3 projections, 53 BF16 norms and
+  a BF16 embedding. Each projection requires rank-0 positive finite BF16
+  weight_scale_inv and activation_scale. The former multiplies decoded FP8 in
+  FP32 with no BF16 rounding; the latter is validated but unused (not W8A8).
+  Unknown language_model tensors are rejected. Other namespaces are parsed
+  safely but never uploaded or validated as a vision architecture.
 * Unique weights occupy 13,716,025,344 bytes (12.774 GiB). KV is
   `[26,2,256,1024]` FP32, exactly 54,525,952 bytes (52 MiB).
 * Scratch is reused across layers and steps. Each prefill or decode uses one
@@ -80,14 +82,22 @@ support. The larger checkpoint position limit is not a supported context claim.
   working-set size is performance guidance, not hard capacity. Avoid keeping
   another full model (for example PyTorch) resident simultaneously. Physical VM
   reclamation can lag Metal object release; immediate destroy/recreate may be
-  rejected temporarily by the same conservative guard. Wait before retrying.
+  handled by a bounded availability wait before data allocation: an initially sufficient
+  estimate passes immediately; otherwise the same estimate is polled at up to 50 ms
+  intervals against one 3-second monotonic budget. The observed accounting lag was
+  up to about one second; three seconds provides margin, not a reclamation guarantee.
+  Each sleep is capped to the remaining budget, including after interruption;
+  clock/query errors fail closed, and late sufficient results are rejected.
+  This heuristic does not check memory pressure, change the reserve, or guarantee
+  allocation success; allocation can still fail cleanly. Destroy never waits.
+  A final guard refusal ends a validation run; do not lower the guard.
 
 ## API and ownership
 
 `include/metal.h` contains only C types: opaque create/create_with_options/destroy/reset/prefill/decode.
 A context owns an ARC Objective-C owner through an explicitly retained C wrapper.
 Destroy transfers that reference back to ARC, releasing weights, scratch, KV,
-queue and pipelines. Shard files are closed after uploads, including on failure.
+queue and pipelines. The checkpoint file is closed after uploads, including on failure.
 Calls on one context must not be concurrent. No Python is involved at runtime.
 
 Prefill requires an empty valid sequence; decode requires a nonempty sequence
@@ -124,24 +134,28 @@ Optional real-weight validation accepts explicit paths only:
 ```sh
 make BUILD=build/metal build/metal/compare_metal
 build/metal/compare_metal --self-test
-build/metal/compare_metal models/shard1.safetensors models/shard2.safetensors \
+build/metal/compare_metal models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
   fixtures/prompt.ids fixtures/generation.safetensors
 # Repeat with a trailing --metal-prefill=custom to validate the custom path.
 ```
 
 `prompt.ids` is whitespace-separated decimal IDs (1..256 tokens).
 The independent reference safetensors file must contain `generated` I64 `[N]`
-and `logits_0` through `logits_N-1` F32 `[1,131072]`, with
+and `logits_0` through `logits_N-1` F32 `[1,131072]`, plus `block_25_STEP`
+and `final_norm_STEP` F32 `[1,rows,3072]` (rows=prompt length for prefill,
+otherwise 1). These are test-only snapshots of existing buffers, with
 `N <= 256 - prompt_count`. Run multiple pairs in one invocation to exercise
 reset/reuse across distinct prompts. The comparator runs two cycles, checks every
 logit finite with `abs(error) <= 2e-4 + 1e-4*abs(reference)`, and requires exact
 lowest-index greedy IDs. It also exercises invalid appends, the final KV slot
-for a 255-token prompt, and same-process destroy/recreate with reversed shards.
-The recreate check allows up to three one-second VM-reclamation waits without
-relaxing the memory guard. Those extra state checks are not extra independent
+for a 255-token prompt, and same-process single-file destroy/recreate.
+A final memory-guard refusal is final, without inference retries. Those extra state checks are not extra independent
 numerical comparisons.
 Fixture/oracle provenance must be verified separately before interpreting passes.
 Generate independent fixtures in a separate process, never alongside GPU residency.
 
 Real-weight validation and performance results are not part of the default
 suite. Synthetic tests alone are not a claim of full-model or CPU/GPU equivalence.
+
+The FP8-derived strict numerical baseline is pending: fitting longer-context
+reference mismatches must be reported, not repaired by loosening thresholds.

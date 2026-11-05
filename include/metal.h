@@ -10,10 +10,10 @@
  */
 typedef struct lunelette_metal lunelette_metal;
 
-/* Two explicit BF16 safetensors shards, in either order; no index file needed.
+/* One official HF mixed FP8/BF16 model.safetensors; no index file needed.
  * Validates all required text tensor shapes/dtypes before weight allocation.
  * NULL on failure; diagnostic written when error/capacity permit. */
-lunelette_metal *lunelette_metal_create(const char *first, const char *second,
+lunelette_metal *lunelette_metal_create(const char *path,
     char *error, size_t capacity);
 typedef enum {
     LUNELETTE_METAL_PREFILL_MPS = 0,
@@ -26,12 +26,12 @@ typedef struct {
 
 #define LUNELETTE_METAL_OPTIONS_DEFAULT { LUNELETTE_METAL_PREFILL_MPS }
 
-/* NULL options selects defaults. Invalid enum values fail before opening shards.
+/* NULL options selects defaults. Invalid enum values fail before opening the checkpoint.
  * create() is equivalent to create_with_options(..., NULL, ...).
  * MPS is the default for multi-token block projections; decode/head stay precise.
  * MPS uses FP32 storage, but internal accumulation precision is unspecified.
  * CUSTOM retains the precise FP32 custom arithmetic for all projections. */
-lunelette_metal *lunelette_metal_create_with_options(const char *first, const char *second,
+lunelette_metal *lunelette_metal_create_with_options(const char *path,
     const lunelette_metal_options *options, char *error, size_t capacity);
 void lunelette_metal_destroy(lunelette_metal *context);
 

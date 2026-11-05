@@ -27,28 +27,27 @@ make BUILD=build/ndebug CFLAGS='-std=c11 -O2 -DNDEBUG -Wall -Wextra -Wpedantic' 
 when changing compiler flags. `make core-test` is an optional portable host-only
 suite, not a second inference engine.
 
-Supply the exact Ministral-3-3B-Instruct-2512 BF16 checkpoint's two shards and
+Supply the official HF-layout Ministral-3-3B-Instruct-2512-FP8 `model.safetensors` and
 `tekken.json` yourself. These example paths are explicit repository-local,
-Git-ignored resources, not bundled files; no shard index is parsed.
+Git-ignored resources, not bundled files; no index is parsed.
 
 ```sh
 ./build/lunelette \
-  --weights models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
-  --weights2 models/Ministral-3-3B-Instruct-2512-BF16/model-00002-of-00002.safetensors \
-  --tokenizer models/Ministral-3-3B-Instruct-2512-BF16/tekken.json \
+  --weights models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  --tokenizer models/tekken.json \
   --system 'Be concise.' \
   --prompt 'What is 17 + 25? Answer with the number only.' \
   --max-new-tokens 3 --dump-output-ids
 ```
 
-The previously checked example produced `42` (IDs `1052 1050 2`), without an
-added newline. Text agreement is not a numerical correctness test.
+The Tekken file is supplied separately; the HF tokenizer JSON is not a Tekken file.
+Text agreement is not a numerical correctness test.
 
 ## CLI behavior and limits
 
 - Generation uses resident weights and KV cache. `--backend` and `--uncached`
   are retired and fail with a diagnostic. Zero budget/full context validates
-  checkpoint metadata without allocating a GPU context.
+  checkpoint metadata and actual positive finite companion scales without allocating a GPU context.
 - Framing is BOS + optional `[SYSTEM_PROMPT]system[/SYSTEM_PROMPT]` +
   `[INST]user[/INST]`, with no added spaces or implicit system message.
   `--raw` instead uses BOS + ordinary prompt text and forbids `--system`.
@@ -76,9 +75,8 @@ sufficient unified memory (development validation: base Apple M5, 32 GiB).
 make BUILD=build/metal
 make BUILD=build/metal test
 build/metal/lunelette \
-  --weights models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
-  --weights2 models/Ministral-3-3B-Instruct-2512-BF16/model-00002-of-00002.safetensors \
-  --tokenizer models/Ministral-3-3B-Instruct-2512-BF16/tekken.json \
+  --weights models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  --tokenizer models/tekken.json \
   --prompt 'What is 2 + 2?' --max-new-tokens 32
 ```
 
@@ -86,7 +84,10 @@ Multi-token block projections default to **MPS**. Select
 `--metal-prefill custom` explicitly for the custom path;
 there is no silent fallback on MPS errors. Decode, single-token prefill and the
 vocabulary head use custom arithmetic. Removed engine selectors fail explicitly.
-Weights, activations and KV storage are FP32 after BF16 weight expansion. MPS
+Weights, activations and KV storage are FP32. The loader expands 182 FP8 projections
+with scalar BF16 multipliers directly into FP32, with no BF16 rounding. The
+embedding/head and 53 norms remain BF16 inputs. Activation scales are checked but
+unused: this is weight-dequantized FP32 execution, **not W8A8**. MPS
 Float32 storage does **not** establish full-FP32 internal accumulation: Apple's
 inspected API does not specify it. Custom kernels use precise FP32 math.
 Historical CPU reduction contracts are retained as provenance only.
@@ -94,25 +95,18 @@ See [Metal usage, memory, ownership, precision and validation](docs/metal.md).
 
 ## What the numerical evidence covers
 
-Historical optional CPU comparisons cover five original sequences (6–150 tokens)
-and three held-outs (44–136 tokens). All last-token logits passed the strict
-`abs(error) <= 2e-4 + 1e-4*abs(reference)` rule. Full-depth hidden states passed a
-separately calibrated **provisional** per-token RMS/cosine/absolute contract;
-the longer case still has **1,220 / 460,800** strict hidden-element failures.
-This is bounded empirical evidence, not general certification or proof that all
-remaining drift is harmless. Generated text alone proves neither model nor cache
-correctness. Synthetic Metal tests alone do not establish full-model equivalence.
+The mixed-checkpoint loader is covered by exhaustive FP8 encoding tests and
+synthetic metadata/scalar-read tests. Optional exact decoded-weight and independent
+FP32 prefill/cached-decode comparisons require fresh fixtures from this checkpoint.
+The external-reference threshold is frozen at `2e-4 + 1e-4*abs(reference)`;
+loading success and matching greedy IDs alone do not establish a numerical baseline.
+Current FP8-derived comparisons expose strict reference mismatches at fitting longer
+contexts; the numerical baseline remains pending. Do not substitute archived BF16
+fixtures or infer 256-token correctness from short range probes.
 
-The CPU full-depth hidden-state comparisons summarized here reach 150 tokens,
-not 256. Separate Metal validation tested 256-token prefills against reference
-logits in both MPS and custom modes; this does not establish long-context
-correctness or extend the CPU hidden-state evidence. No batching, vision,
-quantization, 8B/14B or arbitrary checkpoint configuration is supported.
-Optional harnesses require externally supplied fixtures; generator scripts and
-outputs from prior numerical experiments are not bundled. See the guides for
-per-harness schemas, provenance, historical timings, failure counts and untested
-configurations. Historical CPU measurements are not new validation of the current
-engine.
+Historical CPU/BF16 evidence remains in the guides as provenance, not validation
+of this checkpoint contract. No batching, vision, static W8A8 execution, native
+FP8 kernels, 8B/14B or arbitrary checkpoint configuration is supported.
 
 ## Documentation and source map
 
@@ -137,3 +131,12 @@ Unicode-table notices are retained in [NOTICE](NOTICE) and the referenced licens
 files. Adapted code must retain required attribution and license notices.
 
 The project's own distribution license has not yet been selected.
+
+## Correctness roadmap
+
+The single-file FP8 checkpoint port does not change kernels or model math. Before
+calling it a numerical baseline, require fresh independently generated FP32
+prefill, real multi-step cached decode, reset/reuse and near-256 comparisons for
+both MPS and custom. Keep the frozen external tolerance and raw mismatch vectors;
+resolve acceptance separately rather than quietly loosening a failing gate.
+Native FP8/W8A8 execution and resident-memory optimizations are out of scope.

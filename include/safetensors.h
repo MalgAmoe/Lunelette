@@ -11,6 +11,7 @@
 #define ST_MAX_HEADER (1024 * 1024)
 
 typedef enum {
+    ST_F8_E4M3 = 1,
     ST_BF16 = 2,
     ST_F32 = 4,
     ST_I64 = 8
@@ -41,6 +42,11 @@ const st_tensor *st_find(const st_file *s, const char *name);
 
 /* Bounded raw little-endian byte read; tensor must belong to s. */
 int st_read(st_file *s, const st_tensor *t, uint64_t offset, void *out, size_t bytes);
+
+float st_f8_e4m3_to_f32(unsigned char bits);
+/* Exact count, bounded scratch. Invalid arguments leave output unchanged;
+ * I/O/nonfinite failures may leave a partial destination. Positive finite scale. */
+int st_load_fp8(st_file *s, const st_tensor *t, float scale, float *out, size_t count);
 
 float st_bf16_to_f32(uint16_t bits);
 

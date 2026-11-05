@@ -442,15 +442,15 @@ static void test_options(void)
     lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
     CHECK(options.prefill == LUNELETTE_METAL_PREFILL_MPS);
     options.prefill = (lunelette_metal_prefill_mode)99;
-    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options,
+    CHECK(lunelette_metal_create_with_options(NULL, &options,
         error, sizeof error) == NULL);
     CHECK(strstr(error, "invalid prefill option") != NULL);
-    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options, NULL, 0) == NULL);
-    CHECK(lunelette_metal_create_with_options(NULL, NULL, NULL, error, sizeof error) == NULL);
+    CHECK(lunelette_metal_create_with_options(NULL, &options, NULL, 0) == NULL);
+    CHECK(lunelette_metal_create_with_options(NULL, NULL, error, sizeof error) == NULL);
     options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
-    CHECK(lunelette_metal_create_with_options(NULL, NULL, &options,
+    CHECK(lunelette_metal_create_with_options(NULL, &options,
         error, sizeof error) == NULL);
-    CHECK(lunelette_metal_create(NULL, NULL, NULL, 0) == NULL);
+    CHECK(lunelette_metal_create(NULL, NULL, 0) == NULL);
 }
 
 static void test_norm_element(LuneletteMetalOwner *owner)

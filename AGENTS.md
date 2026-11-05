@@ -63,6 +63,18 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
   or sibling checkouts in code, instructions, or documented commands. Workspace
   arrangements belong in workspace instructions, outside this repository.
 
+## Checkpoint contract
+
+- Support only the official HF-layout mixed FP8/BF16 single `model.safetensors`.
+  No second-shard API, BF16-checkpoint fallback, or row permutation.
+- Reconstruct projection weights as FP8 decoded to FP32 times BF16 scale widened
+  to FP32, with no BF16 product rounding. Validate scalar positive finite weight
+  and activation scales; activation scales are unused in FP32 execution (not W8A8).
+- Keep 182 FP8 projections, 53 BF16 norms, BF16 embedding/tied head and context256.
+  Resident weights remain 13,716,025,344 bytes; preserve the 24 GiB peak guard.
+- Fresh fixtures must come from this checkpoint and true cached decode. Archived
+  BF16 fixtures are historical, not an oracle for the current runtime.
+
 ## Tests and reference evidence
 
 - Use always-active `CHECK`-style assertions in tests. Never put required setup,
@@ -97,8 +109,8 @@ under the repository-local ignored `models/` and `fixtures/` directories
 
 ```sh
 make integration \
-  WEIGHTS=models/Ministral-3-3B-Instruct-2512-BF16/model-00001-of-00002.safetensors \
-  FIXTURES=fixtures/reference
+  WEIGHTS=models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  FIXTURES=fixtures/fp8
 ```
 
 Use separate build directories when changing compiler flags so stale binaries do

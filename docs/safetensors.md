@@ -20,7 +20,7 @@ not thread-safe. Do not modify public tensor descriptors or reopen live handles.
 
 Deliberate limits (unsupported inputs fail, not silently reinterpret):
 
-- BF16, F32, I64 only; at most 8 dimensions, 4,096 tensors, 1 MiB header.
+- F8_E4M3 (one byte), BF16, F32, I64 only; at most 8 dimensions, 4,096 tensors, 1 MiB header.
 - Nonempty unique tensor names, up to 255 printable ASCII bytes. JSON escapes
   for quote, slash, backslash and printable ASCII `\uXXXX` are decoded.
   Non-ASCII/control strings are unsupported, including metadata strings.
@@ -45,3 +45,14 @@ count (not a capacity). It uses 64 KiB (65,536 bytes) of scratch space, validate
 count and handle membership, and may partially modify output on I/O failure.
 It allocates nothing and retains no state. See the header contract.
 See [optional validation and reader test coverage](validation.md).
+
+## FP8 numeric reads
+
+`st_f8_e4m3_to_f32` implements the finite E4M3 variant: signed zero,
+subnormals in units of 2^-9, finite extrema +/-448 and NaN bytes 0x7f/0xff.
+Only the exact safetensors dtype spelling `F8_E4M3` is accepted.
+`st_load_fp8` fills exactly the caller's FP32 destination using 64 KiB scratch,
+rejecting NaNs and nonfinite reconstructed products. The positive finite FP32
+scale is multiplied after decoding, without intermediate BF16 rounding. Invalid
+arguments leave output unchanged; I/O/nonfinite failures may leave partial data.
+The checkpoint-specific module owns companion names, scalar policy and shapes.

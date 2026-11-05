@@ -6,6 +6,7 @@
     } \
 } while (0)
 #include <math.h>
+#include <float.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -158,6 +159,77 @@ static void loader_chunk_tests(void)
     }
 }
 
+#include "fp8_golden.h"
+
+static void fp8_tests(void)
+{
+    for (unsigned i = 0; i < 256; i++) {
+        float value = st_f8_e4m3_to_f32((unsigned char)i);
+        uint32_t bits;
+        memcpy(&bits, &value, sizeof bits);
+        if ((i & 127) == 127) {
+            CHECK(isnan(value));
+        } else {
+            CHECK(bits == fp8_golden[i]);
+        }
+    }
+    good("{\"f\":{\"dtype\":\"F8_E4M3\",\"shape\":[],\"data_offsets\":[0,1]}}", 1);
+    bad("{\"f\":{\"dtype\":\"F8_E4M3FN\",\"shape\":[1],\"data_offsets\":[0,1]}}", 1);
+    bad("{\"f\":{\"dtype\":\"F8_E4M3\",\"shape\":[2],\"data_offsets\":[0,1]}}", 1);
+    st_tensor tensor = {0};
+    tensor.dtype = ST_F8_E4M3;
+    tensor.end = 65538;
+    st_file source = {0};
+    source.file = tmpfile();
+    CHECK(source.file != NULL);
+    source.tensors = &tensor;
+    source.count = 1;
+    for (size_t i = 0; i < tensor.end; i++) {
+        unsigned byte = i % 256;
+        CHECK(fputc((byte & 127) == 127 ? 0 : byte, source.file) != EOF);
+    }
+    CHECK(fflush(source.file) == 0);
+    float *out = malloc(tensor.end * sizeof *out);
+    CHECK(out != NULL);
+    const float scales[] = {0.251953125f, 1.0078125f, 3.140625f};
+    for (size_t j = 0; j < sizeof scales / sizeof scales[0]; j++) {
+        CHECK(st_load_fp8(&source, &tensor, scales[j], out, tensor.end) == 0);
+        for (size_t i = 0; i < tensor.end; i++) {
+            float expected;
+            unsigned byte = i % 256;
+            uint32_t bits = fp8_golden[(byte & 127) == 127 ? 0 : byte];
+            memcpy(&expected, &bits, sizeof expected);
+            CHECK(out[i] == expected * scales[j]);
+        }
+    }
+    out[0] = 42;
+    CHECK(st_load_fp8(&source, &tensor, 1, out, tensor.end - 1) != 0);
+    CHECK(out[0] == 42);
+    CHECK(st_load_fp8(&source, &tensor, NAN, out, tensor.end) != 0);
+    CHECK(out[0] == 42);
+    CHECK(st_load_fp8(&source, &tensor, 0, out, tensor.end) != 0);
+    CHECK(st_load_fp8(&source, &tensor, -1, out, tensor.end) != 0);
+    CHECK(st_load_fp8(&source, &tensor, INFINITY, out, tensor.end) != 0);
+    CHECK(st_load_fp8(&source, &tensor, 1, out, SIZE_MAX) != 0);
+    CHECK(st_load_fp8(&source, &tensor, FLT_MAX, out, tensor.end) != 0);
+    /* Beyond the first successful chunk: I/O failure may publish only a partial
+     * destination, never a successful loader result. */
+    tensor.end++;
+    CHECK(st_load_fp8(&source, &tensor, 1, out, tensor.end) != 0);
+    CHECK(out[0] == 0);
+    tensor.end--;
+    CHECK(fseek(source.file, 65536, SEEK_SET) == 0);
+    CHECK(fputc(127, source.file) != EOF);
+    CHECK(fflush(source.file) == 0);
+    CHECK(st_load_fp8(&source, &tensor, 1, out, tensor.end) != 0);
+    CHECK(fseek(source.file, 65536, SEEK_SET) == 0);
+    CHECK(fputc(255, source.file) != EOF);
+    CHECK(fflush(source.file) == 0);
+    CHECK(st_load_fp8(&source, &tensor, 1, out, tensor.end) != 0);
+    CHECK(fclose(source.file) == 0);
+    free(out);
+}
+
 int main(int argc, char **argv) {
     CHECK(argc == 5); path = argv[1];
     const char *valid = "{\"w\":{\"dtype\":\"BF16\",\"shape\":[2,2],\"data_offsets\":[0,8]},\"f\":{\"dtype\":\"F32\",\"shape\":[],\"data_offsets\":[8,12]},\"i\":{\"dtype\":\"I64\",\"shape\":[1],\"data_offsets\":[12,20]}}";
@@ -259,6 +331,7 @@ int main(int argc, char **argv) {
     CHECK(!st_load_bf16(&s, st_find(&s, "scalar"), large, 1));
     free(large);
     st_close(&s);
+    fp8_tests();
     capacity_tests();
     loader_chunk_tests();
     /* Every truncated prefix/header/data position must fail. */

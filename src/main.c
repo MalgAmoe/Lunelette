@@ -10,11 +10,11 @@
 static int usage(void)
 {
     return puts("Usage: lunelette --tokenizer TEKKEN --prompt TEXT [--system TEXT] [--raw]\n"
-         "       [--weights SHARD1 --weights2 SHARD2] [--max-new-tokens N]\n"
+         "       [--weights MODEL.safetensors] [--max-new-tokens N]\n"
          "       [--metal-prefill mps|custom]\n"
          "       [--dump-prompt-ids] [--dump-output-ids]\n"
          "Single-turn 3B text chat; no default system message. Raw: BOS + text.\n"
-         "Generation requires both shards; prompt-ID mode needs neither.\n"
+         "Generation requires the FP8 checkpoint; prompt-ID mode needs no weights.\n"
          "Greedy resident Metal/MPS runtime; total context <=256.\n"
          "N=0..256 (default 32).\n"
          "--dump-prompt-ids prints IDs only, without opening weights.\n"
@@ -87,13 +87,13 @@ int main(int argc, char **argv)
         }
         return failed;
     }
-    const char *weights = NULL, *weights2 = NULL, *path = NULL;
+    const char *weights = NULL, *path = NULL;
     const char *prompt = NULL, *system = NULL;
     const char *metal_prefill = NULL;
     int raw = 0, dump = 0, output_ids = 0;
     unsigned seen = 0;
     lunelette_generation_config config = LUNELETTE_GENERATION_DEFAULT;
-    const char *names[] = {"--weights", "--weights2", "--tokenizer", "--prompt",
+    const char *names[] = {"--weights", "--tokenizer", "--prompt",
         "--system", "--max-new-tokens", "--raw", "--dump-prompt-ids",
         "--dump-output-ids", "--metal-prefill"};
     for (int i = 1; i < argc; i++) {
@@ -113,7 +113,7 @@ int main(int argc, char **argv)
         }
         seen |= 1u << option;
         const char *value = NULL;
-        if (option < 6 || option == 9) {
+        if (option < 5 || option == 8) {
             if (++i == argc || strncmp(argv[i], "--", 2) == 0) {
                 fprintf(stderr, "Missing value for %s\n", names[option]);
                 return 1;
@@ -122,20 +122,19 @@ int main(int argc, char **argv)
         }
         switch (option) {
         case 0: weights = value; break;
-        case 1: weights2 = value; break;
-        case 2: path = value; break;
-        case 3: prompt = value; break;
-        case 4: system = value; break;
-        case 5:
+        case 1: path = value; break;
+        case 2: prompt = value; break;
+        case 3: system = value; break;
+        case 4:
             if (parse_budget(value, &config.max_new_tokens) != 0) {
                 fputs("max-new-tokens must be decimal 0..256\n", stderr);
                 return 1;
             }
             break;
-        case 6: raw = 1; break;
-        case 7: dump = 1; break;
-        case 8: output_ids = 1; break;
-        case 9: metal_prefill = value; break;
+        case 5: raw = 1; break;
+        case 6: dump = 1; break;
+        case 7: output_ids = 1; break;
+        case 8: metal_prefill = value; break;
         }
     }
     if (metal_prefill && strcmp(metal_prefill, "mps") != 0 &&
@@ -143,8 +142,8 @@ int main(int argc, char **argv)
         fputs("--metal-prefill must be mps or custom\n", stderr);
         return 1;
     }
-    if (!path || !prompt || (raw && system) || (!dump && (!weights || !weights2))) {
-        fputs("Require --tokenizer, --prompt and both weights (unless --dump-prompt-ids); "
+    if (!path || !prompt || (raw && system) || (!dump && !weights)) {
+        fputs("Require --tokenizer, --prompt and --weights (unless --dump-prompt-ids); "
               "--raw forbids --system. Use --help.\n", stderr);
         return 1;
     }
@@ -179,7 +178,7 @@ int main(int argc, char **argv)
         /* Keep full checkpoint validation, but do not create a GPU context for
          * a request that cannot execute even one logits step. */
         lunelette_metal_weights metadata;
-        if (lunelette_metal_weights_open(&metadata, weights, weights2,
+        if (lunelette_metal_weights_open(&metadata, weights,
                 error, sizeof error) != 0) {
             goto cleanup;
         }
@@ -194,7 +193,7 @@ int main(int argc, char **argv)
         if (metal_prefill && strcmp(metal_prefill, "custom") == 0) {
             metal_options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
         }
-        metal = lunelette_metal_create_with_options(weights, weights2, &metal_options,
+        metal = lunelette_metal_create_with_options(weights, &metal_options,
             error, sizeof error);
         metal_generation generation = {metal, 0};
         if (!metal || lunelette_generate_with_logits(metal_next, &generation, ids, count,
