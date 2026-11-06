@@ -60,9 +60,13 @@ def load_scenario(path):
 
 class Service:
     """Owns only the child it launches. Every request/arrival/failure is recorded."""
-    def __init__(self, executable, output, tick_ms=50, native_args=None, request_seconds=120):
+    def __init__(self, executable, output, tick_ms=50, native_args=None, request_seconds=120,
+                 expected_strategy=None):
         if type(request_seconds) not in (int, float) or not 1 <= request_seconds <= 120:
             raise ValueError("request_seconds outside 1..120")
+        if expected_strategy is not None and (native_args is None or expected_strategy not in
+                {"resident-fp32", "compact-fp8-arithmetic"}):
+            raise ValueError("expected strategy requires a supported native launch")
         self.native = native_args is not None
         self.request_seconds = request_seconds if self.native else 15
         self.output = Path(output)
@@ -122,10 +126,13 @@ class Service:
                     raise RuntimeError("native runtime not ready")
                 if info.get("numerical_validation") != "diagnostic_known_reference_mismatches":
                     raise RuntimeError("unexpected numerical status")
+                if expected_strategy is not None and info.get("execution_strategy") != expected_strategy:
+                    raise RuntimeError("native execution strategy mismatch")
             elif not health.get("operational_test_service") or health.get("model_loaded") is not False:
                 raise RuntimeError("unexpected readiness")
             if not self.native and (info.get("generator") != "diagnostic_test_generator" or info.get("runtime_ready") is not False):
                 raise RuntimeError("not the diagnostic protocol service")
+            self.info = info
         except BaseException as error:
             if line:
                 self.stderr.write(line.decode(errors="replace"))
@@ -363,16 +370,18 @@ def main():
     parser.add_argument("--native-model")
     parser.add_argument("--native-tokenizer")
     parser.add_argument("--native-prefill", choices=["mps", "custom"], default="mps")
+    parser.add_argument("--native-strategy", choices=["resident-fp32", "compact-fp8-arithmetic"],
+                        help="native storage strategy (default: resident-fp32); requires model/tokenizer")
     parser.add_argument("--request-seconds", type=float, default=120)
     args = parser.parse_args()
     try:
         scenario = load_scenario(args.scenario)
         native_args = None
-        if args.native_model or args.native_tokenizer:
+        if args.native_model or args.native_tokenizer or args.native_strategy:
             if not args.native_model or not args.native_tokenizer:
                 raise ValueError("native model and tokenizer both required")
             native_args = ["--model", args.native_model, "--tokenizer", args.native_tokenizer,
-                           "--strategy", "resident-fp32", "--context", "256", "--prefill-chunk", "256",
+                           "--strategy", args.native_strategy or "resident-fp32", "--context", "256", "--prefill-chunk", "256",
                            "--prefill", args.native_prefill]
         if (scenario["mode"] == "free_greedy") != (native_args is not None):
             raise ValueError("scenario mode must match explicit native/test launch")
@@ -380,14 +389,17 @@ def main():
             service = Service(args.server, args.output)
         else:
             service = Service(args.server, args.output, native_args=native_args,
-                              request_seconds=args.request_seconds)
+                              request_seconds=args.request_seconds,
+                              expected_strategy=args.native_strategy or "resident-fp32")
     except Exception as error:
         print(f"real-workload: {error}", file=sys.stderr)
         return 1
     exit_status = 0
     result = {"protocol_success": False, "task_success": None}
+    if native_args is not None:
+        result["execution_strategy"] = service.info["execution_strategy"]
     try:
-        result = run(service, scenario)
+        result.update(run(service, scenario))
     except BaseException as error:
         service.record("failure", error=repr(error))
         result["error"] = repr(error)

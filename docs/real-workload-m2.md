@@ -26,8 +26,12 @@ python3 tools/real_workload.py --server build/lunelette-server \
 All native configuration is required; `mps|custom` and context/chunk 256 remain
 fixed choices. M2 used `resident-fp32`; [M4](real-workload-m4.md) also supports
 `--strategy compact-fp8-arithmetic` in the server. The convenience Python client
-shown above still launches resident FP32, not compact. No fake switch, default
-weights or fallback.
+shown above defaults to resident FP32; add
+`--native-strategy compact-fp8-arithmetic` to select compact explicitly. The client
+requires the native model/tokenizer pair and rejects a missing or different strategy
+in the server's `/info` response. It records the verified strategy in `result.json`,
+including scenario failures, and retains raw `/info` in `client.ndjson`. No fake
+switch, default weights or fallback.
 The separate `build/test_service_server` remains model-free. The client has a
 180-second startup deadline, explicit native generation deadline 1..120 seconds
 (default 120), and four-second control-request sockets. Native shutdown has a
@@ -75,8 +79,10 @@ worker before releasing the session. Startup failures release untransferred stat
 Every materialization checks the exact runtime prefix mirror, including any
 emitted pending ID. Partial continuation decodes that ID once. New user turns
 reset and prefill the **entire authoritative ledger** with weights resident:
-reuse-off, not retained-prefix reuse. Logits are invalidated before reset. No
-checkpoints, tools, chunked ingestion or capacity changes.
+the legacy policy, not retained-prefix reuse or M5's strict off control. Logits are
+invalidated before reset. This remains the omitted-policy default; see the
+[M5 guide](real-workload-m5.md) for explicit experimental on/off checkpoint controls.
+Tools, chunked ingestion and capacity changes remain unsupported.
 
 ## Identity and measurement limits
 

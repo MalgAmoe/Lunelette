@@ -13,6 +13,13 @@ int main(void)
         r->decode_us[i] = UINT64_MAX;
         r->token_ids[i] = UINT_MAX;
     }
+    r->work = (service_work){.full_attempted = 65536, .full_committed = 65536,
+        .suffix_attempted = 65536, .suffix_committed = 65536,
+        .pending_attempted = 256, .pending_committed = 256, .prefill_calls = 256,
+        .append_calls = 256, .decode_calls = 256, .decode_attempted = 256,
+        .decode_committed = 256, .logit_restores = 1};
+    r->suffix_us = UINT64_MAX;
+    r->suffix_steps = 256;
     r->prefill_us = r->decode_total_us = UINT64_MAX;
     r->prefill_ms = r->decode_ms = r->total_ms = r->framing_ms = 9223372036854.0;
     r->first_token_ms = r->cancel_received_ms = r->cancel_latency_ms = 9223372036854.0;
@@ -23,7 +30,7 @@ int main(void)
     strcpy(r->before_state, "partial");
     strcpy(session.state, "needs_reset");
     session.generator.info = "{}";
-    char measured[6400];
+    char measured[SERVICE_METRIC_BYTES];
     CHECK(metrics(r, 1, measured, sizeof(measured)));
     char small[10];
     CHECK(!metrics(r, 1, small, sizeof(small)));

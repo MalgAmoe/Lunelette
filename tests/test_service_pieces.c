@@ -129,7 +129,8 @@ static void finish(char *assembled)
 int main(void)
 {
     fixture f = {0};
-    service_generator generator = {&f, next, materialize, reset, destroy, frame, piece, 2, "{}"};
+    service_generator generator = {.context = &f, .next = next, .materialize = materialize,
+        .reset = reset, .destroy = destroy, .frame = frame, .piece = piece, .eos = 2, .info = "{}"};
     CHECK(service_init(&session, generator));
     int info_stream;
     CHECK(service_route(&session, "GET", "/info", "", 0, reply, sizeof(reply), &info_stream) == 200);

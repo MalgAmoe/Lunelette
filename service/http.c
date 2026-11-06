@@ -22,6 +22,7 @@
 #define INPUT_LIMIT (HEADER_LIMIT + BODY_LIMIT)
 typedef struct {
     int fd, streaming, closing, parsed;
+    char request_id[65];
     size_t received, header, body, sent, output_length;
     double deadline;
     char input[INPUT_LIMIT + 1], output[65536];
@@ -46,7 +47,7 @@ static int nonblocking(int fd)
 static void close_connection(connection *c, service_session *s)
 {
     if (c->streaming) {
-        service_disconnect(s);
+        service_disconnect_request(s, c->request_id);
     }
     close(c->fd);
     memset(c, 0, sizeof(*c));
@@ -279,8 +280,8 @@ int main(int argc, char **argv)
     }
 #ifndef SERVICE_NATIVE
     fixture_generator fixture = {.delay_ms = delay};
-    service_generator generator = {&fixture, fixture_next, fixture_materialize,
-                                   fixture_reset, fixture_destroy, NULL, NULL, 0, NULL};
+    service_generator generator = {.context = &fixture, .next = fixture_next,
+        .materialize = fixture_materialize, .reset = fixture_reset, .destroy = fixture_destroy};
 #endif
     service_session *session = calloc(1, sizeof(*session));
     if (!session || !service_init(session, generator)) {
@@ -388,6 +389,9 @@ int main(int argc, char **argv)
                                 c->deadline = now() + 120.0;
                             }
                             if (stream) {
+                                pthread_mutex_lock(&session->lock);
+                                strcpy(c->request_id, session->history[session->active].id);
+                                pthread_mutex_unlock(&session->lock);
                                 stream_owner = (int)i;
                             }
                         }

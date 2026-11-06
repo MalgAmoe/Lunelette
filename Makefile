@@ -88,8 +88,13 @@ $(BUILD)/metal_%.o: src/metal_%.c $(METAL_HEADERS) | $(BUILD)
 $(BUILD)/metal_%.o: src/metal_%.m $(METAL_HEADERS) $(BUILD)/metal_shader.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -I$(BUILD) $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) -c $< -o $@
 
-$(BUILD)/test_metal: tests/test_metal.m tests/rope_golden.h $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
-	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) $(LDFLAGS) tests/test_metal.m $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
+# Checkpoint allocation failure injection is confined to this test runtime object.
+METAL_TEST_OBJECTS = $(filter-out $(BUILD)/metal_runtime.o,$(METAL_OBJECTS)) $(BUILD)/test_metal_runtime.o
+$(BUILD)/test_metal_runtime.o: src/metal_runtime.m $(METAL_HEADERS) $(BUILD)/metal_shader.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -I$(BUILD) $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) -DLUNELETTE_METAL_CHECKPOINT_ALLOC=lunelette_test_checkpoint_alloc -c $< -o $@
+
+$(BUILD)/test_metal: tests/test_metal.m tests/rope_golden.h $(METAL_TEST_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) $(LDFLAGS) tests/test_metal.m $(METAL_TEST_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
 
 .PHONY: metal-test
 $(BUILD)/test_metal_compact: tests/test_metal_compact.m $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
@@ -197,3 +202,13 @@ endif
 
 $(BUILD)/test_service_metrics: tests/test_service_metrics.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_metrics.c src/tokenizer_json.c -o $@ -pthread
+
+ifeq ($(shell uname -s),Darwin)
+# Optional CPU-only native HTTP integration; tokenizer supplied by the caller.
+$(BUILD)/test_service_checkpoint_server: tests/test_service_checkpoint_server.c tests/test_service_native.c service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_checkpoint_server.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
+.PHONY: service-checkpoint-test
+service-checkpoint-test: $(BUILD)/test_service_checkpoint_server
+	@test -n "$(TOKENIZER)" || { echo 'Supply TOKENIZER=/path/to/official/tokenizer.json'; exit 1; }
+	python3 tests/test_service_checkpoint_http.py ./$(BUILD)/test_service_checkpoint_server "$(TOKENIZER)"
+endif

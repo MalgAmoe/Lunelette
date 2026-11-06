@@ -42,7 +42,19 @@
 
 /* No-op encoders let the actual host traversal reach each nil-encoder boundary
  * and command/nonfinite publication paths. They do not simulate GPU arithmetic. */
-@interface NoopEncoder : NSObject
+static bool inspect_suffix_copies;
+static size_t suffix_copy_count;
+static bool fail_checkpoint_allocation;
+
+void *lunelette_test_checkpoint_alloc(size_t bytes)
+{
+    return fail_checkpoint_allocation ? NULL : malloc(bytes);
+}
+
+@interface NoopEncoder : NSObject {
+@public
+    id<MTLCommandBuffer> kv_command;
+}
 @end
 @implementation NoopEncoder
 - (void)setComputePipelineState:(id<MTLComputePipelineState>)pipeline
@@ -64,6 +76,20 @@
     toBuffer:(id<MTLBuffer>)destination destinationOffset:(NSUInteger)destination_offset
     size:(NSUInteger)bytes
 {
+    /* Observe production KV blits; optionally execute only those copies below.
+     * Other copies in this traversal have hidden-width (3072), not KV width. */
+    if (inspect_suffix_copies && bytes == 2 * LUNELETTE_MODEL_KV * sizeof(float)) {
+        CHECK(source_offset == 0);
+        CHECK(destination_offset == LUNELETTE_MODEL_KV * sizeof(float));
+        suffix_copy_count++;
+    }
+    if (kv_command && bytes == 2 * LUNELETTE_MODEL_KV * sizeof(float)) {
+        id<MTLBlitCommandEncoder> copy = [kv_command blitCommandEncoder];
+        CHECK(copy);
+        [copy copyFromBuffer:source sourceOffset:source_offset toBuffer:destination
+            destinationOffset:destination_offset size:bytes];
+        [copy endEncoding];
+    }
 }
 - (void)endEncoding
 {
@@ -75,6 +101,7 @@
     size_t calls;
     size_t fail_at;
     MTLCommandBufferStatus completion;
+    id<MTLCommandBuffer> kv_command;
 }
 @end
 @implementation SyntheticCommand
@@ -86,17 +113,24 @@
 - (id<MTLBlitCommandEncoder>)blitCommandEncoder
 {
     calls++;
-    return calls == fail_at ? nil : (id<MTLBlitCommandEncoder>)[NoopEncoder new];
+    if (calls == fail_at) {
+        return nil;
+    }
+    NoopEncoder *encoder = [NoopEncoder new];
+    encoder->kv_command = kv_command;
+    return (id<MTLBlitCommandEncoder>)encoder;
 }
 - (void)commit
 {
+    [kv_command commit];
 }
 - (void)waitUntilCompleted
 {
+    [kv_command waitUntilCompleted];
 }
 - (MTLCommandBufferStatus)status
 {
-    return completion;
+    return kv_command ? kv_command.status : completion;
 }
 - (NSError *)error
 {
@@ -690,6 +724,144 @@ static void test_state(LuneletteMetalOwner *owner)
     CHECK(owner->valid && owner->length == 0);
     CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
     CHECK(owner->valid && owner->length == 1 && logits == output);
+    /* Model arithmetic is mocked; the bounded GPU KV-copy check below separately
+     * verifies retained-prefix memory, not model outputs. */
+    lunelette_metal_checkpoint *first = NULL, *second = NULL, *failed = NULL;
+    CHECK(owner->endpoint_logits_valid);
+    output[0] = -0.0f;
+    output[LUNELETTE_MODEL_VOCAB - 1] = 17.25f;
+    CHECK(lunelette_metal_checkpoint_create(&context, &first, error, sizeof error) == 0);
+    CHECK(first != NULL);
+    float *saved_output = malloc(LUNELETTE_MODEL_VOCAB * sizeof(float));
+    CHECK(saved_output != NULL);
+    memcpy(saved_output, output, LUNELETTE_MODEL_VOCAB * sizeof(float));
+    size_t before_calls = synthetic->calls;
+    CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) == 0);
+    CHECK(synthetic->calls == before_calls && signbit(logits[0]));
+    CHECK(logits[LUNELETTE_MODEL_VOCAB - 1] == 17.25f);
+    owner->buffers[METAL_X] = buffer(owner, 2 * 3072);
+    owner->buffers[METAL_COS] = buffer(owner, 2 * 128);
+    owner->buffers[METAL_SIN] = buffer(owner, 2 * 128);
+    owner->buffers[METAL_POSITIONS] = buffer(owner, 2);
+    int64_t suffix[] = {0, 0};
+    CHECK(lunelette_metal_append(&context, suffix, 0, &logits, error, sizeof error) != 0);
+    suffix[1] = -1;
+    CHECK(lunelette_metal_append(&context, suffix, 2, &logits, error, sizeof error) != 0);
+    CHECK(owner->length == 1 && owner->endpoint_logits_valid);
+    suffix[1] = 0;
+    /* Execute production-selected KV blits on a real Metal command while model
+     * compute remains no-op. Check all layers' prefix, suffix and tail bytes. */
+    owner->buffers[METAL_ROTATED_K] = buffer(owner, 2 * LUNELETTE_MODEL_KV);
+    owner->buffers[METAL_V] = buffer(owner, 2 * LUNELETTE_MODEL_KV);
+    for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+        owner->keys[layer] = buffer(owner, 4 * LUNELETTE_MODEL_KV + 4);
+        owner->values[layer] = buffer(owner, 4 * LUNELETTE_MODEL_KV + 4);
+        memset(owner->keys[layer].contents, 0x5a, owner->keys[layer].length);
+        memset(owner->values[layer].contents, 0x5a, owner->values[layer].length);
+    }
+    for (unsigned branch = 0; branch < 2; branch++) {
+        CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) == 0);
+        memset(owner->buffers[METAL_ROTATED_K].contents, 0x20 + branch,
+            owner->buffers[METAL_ROTATED_K].length);
+        memset(owner->buffers[METAL_V].contents, 0x40 + branch,
+            owner->buffers[METAL_V].length);
+        synthetic->kv_command = [real_queue commandBuffer];
+        CHECK(synthetic->kv_command);
+        CHECK(lunelette_metal_append(&context, suffix, 2, &logits, error, sizeof error) == 0);
+        synthetic->kv_command = nil;
+        for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+            id<MTLBuffer> caches[] = {owner->keys[layer], owner->values[layer]};
+            for (unsigned kind = 0; kind < 2; kind++) {
+                unsigned char *bytes = caches[kind].contents;
+                size_t token_bytes = LUNELETTE_MODEL_KV * sizeof(float);
+                for (size_t i = 0; i < caches[kind].length; i++) {
+                    unsigned char expected = i >= token_bytes && i < 3 * token_bytes ?
+                        (kind ? 0x40 : 0x20) + branch : 0x5a;
+                    CHECK(bytes[i] == expected);
+                }
+            }
+        }
+    }
+    CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) == 0);
+    puts("Checkpoint restore/rebranch real GPU KV blits: 26 layers, prefix/suffix/tail PASS (compute mocked)");
+    synthetic->calls = 0;
+    suffix_copy_count = 0;
+    inspect_suffix_copies = true;
+    CHECK(lunelette_metal_append(&context, suffix, 2, &logits, error, sizeof error) == 0);
+    inspect_suffix_copies = false;
+    CHECK(suffix_copy_count == 2 * LUNELETTE_MODEL_LAYERS);
+    CHECK(synthetic->calls == encoder_count); /* One batched traversal, not two decodes. */
+    CHECK(owner->length == 3);
+    uint32_t *positions = owner->buffers[METAL_POSITIONS].contents;
+    CHECK(positions[0] == 1 && positions[1] == 2);
+    output[0] = 9;
+    CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) == 0);
+    CHECK(owner->length == 1 && signbit(logits[0]));
+    CHECK(memcmp(logits, saved_output, LUNELETTE_MODEL_VOCAB * sizeof(float)) == 0);
+    CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error) == 0);
+    CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) == 0);
+    CHECK(owner->length == 1 && signbit(logits[0]));
+    CHECK(memcmp(logits, saved_output, LUNELETTE_MODEL_VOCAB * sizeof(float)) == 0);
+    LuneletteMetalOwner *other = [LuneletteMetalOwner new];
+    CHECK(other->identity != 0 && other->identity != owner->identity);
+    lunelette_metal wrong = {(__bridge void *)other};
+    CHECK(lunelette_metal_checkpoint_restore(&wrong, first, &logits, error, sizeof error) != 0);
+    CHECK(lunelette_metal_checkpoint_create(&context, &second, error, sizeof error) == 0);
+    CHECK(lunelette_metal_checkpoint_restore(&context, first, &logits, error, sizeof error) != 0);
+    CHECK(owner->length == 1 && owner->endpoint_logits_valid);
+    uint64_t epoch = owner->checkpoint_epoch;
+    fail_checkpoint_allocation = true;
+    CHECK(lunelette_metal_checkpoint_create(&context, &failed, error, sizeof error) != 0);
+    fail_checkpoint_allocation = false;
+    CHECK(failed == NULL && owner->active_checkpoint == second && owner->checkpoint_epoch == epoch);
+    CHECK(owner->valid && owner->endpoint_logits_valid && owner->length == 1);
+    CHECK(lunelette_metal_checkpoint_restore(&context, second, &logits, error, sizeof error) == 0);
+    CHECK(!memcmp(logits, saved_output, LUNELETTE_MODEL_VOCAB * sizeof(float)));
+    lunelette_metal_checkpoint_destroy(second);
+    CHECK(owner->active_checkpoint == NULL && owner->endpoint_logits_valid);
+    CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error) == 0);
+    CHECK(lunelette_metal_checkpoint_create(&context, &second, error, sizeof error) == 0);
+    epoch = owner->checkpoint_epoch;
+    owner->checkpoint_epoch = UINT64_MAX;
+    CHECK(lunelette_metal_checkpoint_create(&context, &failed, error, sizeof error) != 0);
+    CHECK(failed == NULL && owner->active_checkpoint == second);
+    owner->checkpoint_epoch = epoch;
+    CHECK(lunelette_metal_checkpoint_restore(&context, second, &logits, error, sizeof error) == 0);
+    output[LUNELETTE_MODEL_VOCAB - 1] = NAN;
+    CHECK(lunelette_metal_checkpoint_create(&context, &failed, error, sizeof error) != 0);
+    CHECK(failed == NULL && !owner->valid && !owner->endpoint_logits_valid);
+    CHECK(owner->active_checkpoint == NULL);
+    CHECK(lunelette_metal_checkpoint_restore(&context, second, &logits, error, sizeof error) != 0);
+    CHECK(logits == NULL);
+    CHECK(lunelette_metal_reset(&context, error, sizeof error) == 0);
+    output[LUNELETTE_MODEL_VOCAB - 1] = 17.25f;
+    CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
+    lunelette_metal_checkpoint_destroy(second);
+    CHECK(lunelette_metal_checkpoint_create(&context, &second, error, sizeof error) == 0);
+    synthetic->completion = MTLCommandBufferStatusError;
+    CHECK(lunelette_metal_append(&context, suffix, 2, &logits, error, sizeof error) != 0);
+    CHECK(!owner->valid && !owner->endpoint_logits_valid && owner->active_checkpoint == NULL);
+    CHECK(lunelette_metal_checkpoint_restore(&context, second, &logits, error, sizeof error) != 0);
+    CHECK(lunelette_metal_reset(&context, error, sizeof error) == 0);
+    CHECK(owner->valid && !owner->endpoint_logits_valid);
+    CHECK(lunelette_metal_checkpoint_create(&context, &failed, error, sizeof error) != 0);
+    synthetic->completion = MTLCommandBufferStatusCompleted;
+    CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
+    CHECK(lunelette_metal_checkpoint_create(&context, &failed, error, sizeof error) == 0);
+    CHECK(lunelette_metal_reset(&context, error, sizeof error) == 0);
+    CHECK(lunelette_metal_checkpoint_restore(&context, failed, &logits, error, sizeof error) != 0);
+    /* Capacity validation is host-only; no KV copies execute for these cases. */
+    CHECK(lunelette_metal_prefill(&context, ids, 1, &logits, error, sizeof error) == 0);
+    owner->length = 254;
+    CHECK(lunelette_metal_append(&context, suffix, 2, &logits, error, sizeof error) == 0);
+    CHECK(owner->length == 256 && positions[0] == 254 && positions[1] == 255);
+    CHECK(lunelette_metal_append(&context, suffix, 1, &logits, error, sizeof error) != 0);
+    CHECK(owner->valid && owner->endpoint_logits_valid && owner->length == 256);
+    free(saved_output);
+    lunelette_metal_checkpoint_destroy(first);
+    lunelette_metal_checkpoint_destroy(second);
+    lunelette_metal_checkpoint_destroy(failed);
+    lunelette_metal_checkpoint_destroy(NULL);
     owner->queue = real_queue;
     lunelette_metal_destroy(NULL);
     CHECK(lunelette_metal_reset(NULL, NULL, 0) != 0);

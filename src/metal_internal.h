@@ -41,6 +41,10 @@ enum { METAL_X, METAL_INPUT_NORM, METAL_Q, METAL_K, METAL_V, METAL_ROTATED_Q,
     LuneletteMPSCache *mps_cache; /* Current shape only; cache never retains this owner. */
     size_t length;
     bool valid;
+    bool endpoint_logits_valid;
+    uint64_t identity; /* Assigned by init, including synthetic owners; never recycled. */
+    uint64_t checkpoint_epoch;
+    lunelette_metal_checkpoint *active_checkpoint; /* Borrowed; caller owns handle. */
 }
 @end
 

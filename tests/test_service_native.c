@@ -12,6 +12,7 @@
 struct lunelette_metal {
     int64_t ids[256];
     unsigned count;
+    lunelette_metal_checkpoint *active;
     lunelette_metal_strategy strategy;
 };
 static unsigned creates, destroys, prefills, decodes, resets;
@@ -54,6 +55,7 @@ int lunelette_metal_reset(lunelette_metal *runtime, char *error, size_t capacity
     (void)capacity;
     resets++;
     runtime->count = 0;
+    runtime->active = NULL;
     return 0;
 }
 static int result(const float **out, char *error, size_t capacity)
@@ -76,7 +78,11 @@ int lunelette_metal_prefill(lunelette_metal *runtime, const int64_t *ids, size_t
     memcpy(runtime->ids, ids, count * sizeof(*ids));
     runtime->count = (unsigned)count;
     prefills++;
-    return result(out, error, capacity);
+    int status = result(out, error, capacity);
+    if (status) {
+        runtime->active = NULL;
+    }
+    return status;
 }
 int lunelette_metal_decode(lunelette_metal *runtime, int64_t token,
                           const float **out, char *error, size_t capacity)
@@ -84,8 +90,228 @@ int lunelette_metal_decode(lunelette_metal *runtime, int64_t token,
     CHECK(runtime->count && runtime->count < 256);
     runtime->ids[runtime->count++] = token;
     decodes++;
-    return result(out, error, capacity);
+    int status = result(out, error, capacity);
+    if (status) {
+        runtime->active = NULL;
+    }
+    return status;
 }
+struct lunelette_metal_checkpoint {
+    lunelette_metal *owner;
+    unsigned count;
+    int64_t ids[256];
+    float *saved;
+};
+static unsigned appends, snapshots, restores;
+static int fail_snapshot;
+int lunelette_metal_append(lunelette_metal *runtime, const int64_t *ids, size_t count,
+                          const float **out, char *error, size_t capacity)
+{
+    CHECK(runtime->count && count && runtime->count + count <= 256);
+    memcpy(runtime->ids + runtime->count, ids, count * sizeof(*ids));
+    runtime->count += (unsigned)count;
+    appends++;
+    int status = result(out, error, capacity);
+    if (status) {
+        runtime->active = NULL;
+    }
+    return status;
+}
+int lunelette_metal_checkpoint_create(lunelette_metal *runtime,
+    lunelette_metal_checkpoint **out, char *error, size_t capacity)
+{
+    (void)error;
+    (void)capacity;
+    *out = NULL;
+    if (fail_snapshot) {
+        return -1;
+    }
+    CHECK(runtime->count);
+    lunelette_metal_checkpoint *c = calloc(1, sizeof(*c));
+    CHECK(c);
+    c->saved = malloc(sizeof(logits));
+    CHECK(c->saved);
+    memcpy(c->saved, logits, sizeof(logits));
+    memcpy(c->ids, runtime->ids, sizeof(c->ids));
+    c->owner = runtime;
+    c->count = runtime->count;
+    runtime->active = c;
+    *out = c;
+    snapshots++;
+    return 0;
+}
+int lunelette_metal_checkpoint_restore(lunelette_metal *runtime,
+    const lunelette_metal_checkpoint *c, const float **out, char *error, size_t capacity)
+{
+    (void)error;
+    (void)capacity;
+    *out = NULL;
+    if (!c || c->owner != runtime || runtime->active != c ||
+        runtime->count < c->count ||
+        memcmp(runtime->ids, c->ids, c->count * sizeof(*c->ids))) {
+        snprintf(error, capacity, "inactive or incompatible checkpoint");
+        return -1;
+    }
+    runtime->count = c->count;
+    memcpy(logits, c->saved, sizeof(logits));
+    *out = logits;
+    restores++;
+    return 0;
+}
+void lunelette_metal_checkpoint_destroy(lunelette_metal_checkpoint *c)
+{
+    if (c) {
+        if (c->owner->active == c) {
+            c->owner->active = NULL;
+        }
+        free(c->saved);
+        free(c);
+    }
+}
+
+static void handle_test(void)
+{
+    lunelette_metal runtime = {0};
+    const int64_t ids[] = {42, 43};
+    const float *out;
+    char error[128];
+    lunelette_metal_checkpoint *old, *replacement;
+    CHECK(!lunelette_metal_prefill(&runtime, ids, 2, &out, error, sizeof(error)));
+    CHECK(!lunelette_metal_checkpoint_create(&runtime, &old, error, sizeof(error)));
+    fail_snapshot = 1;
+    CHECK(lunelette_metal_checkpoint_create(&runtime, &replacement, error, sizeof(error)));
+    fail_snapshot = 0;
+    CHECK(!lunelette_metal_checkpoint_restore(&runtime, old, &out, error, sizeof(error)));
+    CHECK(!lunelette_metal_checkpoint_create(&runtime, &replacement, error, sizeof(error)));
+    CHECK(lunelette_metal_checkpoint_restore(&runtime, old, &out, error, sizeof(error)));
+    CHECK(!out);
+    lunelette_metal_checkpoint_destroy(old);
+    CHECK(!lunelette_metal_checkpoint_restore(&runtime, replacement, &out, error, sizeof(error)));
+    CHECK(!lunelette_metal_reset(&runtime, error, sizeof(error)));
+    CHECK(!lunelette_metal_prefill(&runtime, ids, 2, &out, error, sizeof(error)));
+    CHECK(lunelette_metal_checkpoint_restore(&runtime, replacement, &out, error, sizeof(error)));
+    lunelette_metal_checkpoint_destroy(replacement);
+    CHECK(!lunelette_metal_checkpoint_create(&runtime, &replacement, error, sizeof(error)));
+    fail = 1;
+    CHECK(lunelette_metal_decode(&runtime, 44, &out, error, sizeof(error)));
+    fail = 0;
+    CHECK(lunelette_metal_checkpoint_restore(&runtime, replacement, &out, error, sizeof(error)));
+    CHECK(!out);
+    lunelette_metal_checkpoint_destroy(replacement);
+}
+
+static void policy_test(char **arguments, unsigned policy)
+{
+    char *args[17];
+    memcpy(args, arguments, 15 * sizeof(*args));
+    args[15] = "--prefix-reuse";
+    args[16] = policy == 1 ? "on" : "off";
+    service_generator g;
+    unsigned port;
+    CHECK(service_native_open(17, args, &g, &port));
+    CHECK(g.prefix_reuse == policy);
+    CHECK(strstr(g.info, "\"prefix_reuse_validation\":\"external_evidence_only\""));
+    CHECK(strstr(g.info, "published source-bound evidence; no runtime attestation"));
+    CHECK(strstr(g.info, "\"numerical_comparison_performed_at_startup\":false"));
+    CHECK(!strstr(g.info, "NOT_RUN"));
+    unsigned ids[256], length = 100;
+    for (unsigned i = 0; i < length; i++) {
+        ids[i] = 42;
+    }
+    service_work w;
+    g.begin(g.context);
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.full_committed == 100 && w.prefill_calls == 1);
+    CHECK(g.save(g.context) == 1);
+    unsigned before = appends, full = prefills, scalar = decodes;
+    for (unsigned i = 0; i < 12; i++) {
+        ids[length++] = 43;
+    }
+    g.begin(g.context);
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.full_committed == (policy == 1 ? 0 : 112));
+    CHECK(w.suffix_committed == (policy == 1 ? 12 : 0));
+    CHECK(appends == before + (policy == 1));
+    CHECK(prefills == full + (policy == 2));
+    CHECK(g.next(g.context) == 22177);
+    ids[length++] = 22177;
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.decode_calls == 1 && w.pending_committed == 1 && w.decode_committed == 1);
+    CHECK(decodes == scalar + 1); /* off does not recompute every decode */
+    for (unsigned repeat = 0; repeat < 3; repeat++) {
+        full = prefills;
+        scalar = decodes;
+        CHECK(g.restore(g.context) == 1);
+        g.work(g.context, &w);
+        CHECK(w.logit_restores == (policy == 1));
+        length = 100;
+        CHECK(prefills == full && decodes == scalar);
+        g.begin(g.context);
+        CHECK(g.materialize(g.context, ids, length));
+        g.work(g.context, &w);
+        CHECK(w.full_committed == (policy == 2 ? 100 : 0));
+        CHECK(w.decode_calls == 0);
+        CHECK(g.next(g.context) == 22177);
+        ids[length++] = 22177;
+        CHECK(g.materialize(g.context, ids, length));
+    }
+    full = prefills;
+    scalar = decodes;
+    g.begin(g.context);
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.full_committed == (policy == 2 ? length : 0));
+    CHECK(prefills == full + (policy == 2) && decodes == scalar);
+    ids[0]++;
+    CHECK(!g.materialize(g.context, ids, length));
+    ids[0]--;
+    /* Ordinary new turn reconciles pending EOS and user suffix together. */
+    logits[2] = 2;
+    CHECK(g.next(g.context) == 2);
+    ids[length++] = 2;
+    ids[length++] = 42;
+    ids[length++] = 43;
+    g.begin(g.context);
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.pending_committed == 1);
+    CHECK(w.append_calls == (policy == 1));
+    CHECK(w.suffix_committed == (policy == 1 ? 3 : 0));
+    /* Pending EOS materialized once, including no new user suffix. */
+    logits[2] = 2;
+    CHECK(g.next(g.context) == 2);
+    ids[length++] = 2;
+    CHECK(g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.pending_committed == 1 && w.decode_calls == 1);
+    CHECK(g.save(g.context) == 1);
+    CHECK(g.restore(g.context) == 1);
+    CHECK(g.materialize(g.context, ids, length));
+    /* Failed replacement retains previous snapshot. */
+    fail_snapshot = 1;
+    CHECK(g.save(g.context) == 0);
+    fail_snapshot = 0;
+    CHECK(g.restore(g.context) == 1);
+    CHECK(g.materialize(g.context, ids, length));
+    CHECK(g.next(g.context) == 22177);
+    ids[length++] = 22177;
+    fail = 1;
+    CHECK(!g.materialize(g.context, ids, length));
+    g.work(g.context, &w);
+    CHECK(w.decode_calls == 1 && w.decode_attempted == 1 && !w.decode_committed);
+    CHECK(w.pending_attempted == 1 && !w.pending_committed);
+    fail = 0;
+    if (policy == 1) {
+        CHECK(g.restore(g.context) == 0); /* Execution failure invalidates the handle. */
+    }
+    g.reset(g.context);
+    CHECK(g.restore(g.context) == 0);
+    g.destroy(g.context);
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
@@ -174,7 +400,11 @@ int main(int argc, char **argv)
     CHECK(strstr(generator.info, "\"execution_strategy\":\"compact-fp8-arithmetic\""));
     CHECK(strstr(generator.info, "\"named_conversion_stage_bytes\":113246208"));
     CHECK(strstr(generator.info, "\"named_buffer_total_bytes\":4893045760"));
-    CHECK(strstr(generator.info, "\"compact_model_validation\":\"NOT_RUN\""));
+    CHECK(strstr(generator.info, "\"compact_model_validation\":\"external_evidence_only\""));
+    CHECK(strstr(generator.info, "\"numerical_comparison_performed_at_startup\":false"));
+    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/real-workload-m4.md\""));
+    CHECK(strstr(generator.info, "no runtime attestation"));
+    CHECK(!strstr(generator.info, "NOT_RUN"));
     CHECK(strstr(generator.info, "FP8-convert-stage-then-precise-FP32"));
     CHECK(!strstr(generator.info, "MPS accumulation unspecified"));
     CHECK(strlen(generator.info) + 256 < 4096); /* /info process sample also fits. */
@@ -197,6 +427,11 @@ int main(int argc, char **argv)
     wrong_strategy = 1;
     CHECK(!service_native_open(15, arguments, &generator, &port));
     CHECK(creates == 5 && destroys == 5); /* A valid but unrequested strategy is not fallback. */
+    wrong_strategy = 0;
+    policy_test(arguments, 1);
+    policy_test(arguments, 2);
+    CHECK(snapshots >= 4 && restores >= 4);
+    handle_test();
     puts("native adapter CPU stub contract passed (not model validation)");
     return 0;
 }

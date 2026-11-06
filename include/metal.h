@@ -9,6 +9,7 @@
  * Single caller only; no concurrent calls, including destroy/reset.
  */
 typedef struct lunelette_metal lunelette_metal;
+typedef struct lunelette_metal_checkpoint lunelette_metal_checkpoint;
 
 /* One official HF mixed FP8/BF16 model.safetensors; no index file needed.
  * Validates all required text tensor shapes/dtypes before weight allocation.
@@ -59,7 +60,7 @@ int lunelette_metal_reset(lunelette_metal *context, char *error, size_t capacity
 /* Prefill requires an empty, valid sequence and 1..256 valid token IDs.
  * Decode appends one token to a nonempty sequence of length <256.
  * On success *logits borrows 131072 FP32 values until the next mutating context
- * call or destroy (the read-only memory query is exempt).
+ * call or context destroy (memory query and checkpoint create/destroy are exempt).
  * On failure *logits is NULL. Invalid arguments are rejected before GPU/cache
  * mutation; execution/allocation/nonfinite failures invalidate the sequence,
  * which must be reset before reuse. Never publish partial KV as a valid prefix.
@@ -69,5 +70,33 @@ int lunelette_metal_prefill(lunelette_metal *context, const int64_t *ids, size_t
     const float **logits, char *error, size_t capacity);
 int lunelette_metal_decode(lunelette_metal *context, int64_t token,
     const float **logits, char *error, size_t capacity);
+
+/* Batched nonempty suffix, requiring a valid nonempty prefix. Same validation,
+ * failure and borrowed-output contracts as decode; not a loop of scalar decodes. */
+int lunelette_metal_append(lunelette_metal *context, const int64_t *ids, size_t count,
+    const float **logits, char *error, size_t capacity);
+
+/* Single caller, including all handle operations. Handles own a full finite logit
+ * copy, not KV; destroy every handle before its context. Only one handle is active
+ * per context. Successful create replaces it; older live handles reject restore.
+ * Create requires a materialized nonempty endpoint. Allocation/argument failure
+ * preserves the previous checkpoint and context; *checkpoint is NULL on failure.
+ * Use a separate output slot when replacing: retain the old handle for destruction.
+ * Detection of nonfinite endpoint logits invalidates sequence and checkpoint.
+ * Restore repeatedly rewinds to the saved prefix and copies exact saved logits,
+ * with no GPU work or KV copy. Output borrows runtime storage as above. Append/
+ * decode preserve the checkpoint; reset or execution failure invalidates it.
+ * Invalid restore preserves state and sets *logits NULL. No arbitrary retain API.
+ * Snapshot payload is 524288 host bytes per handle, excluded from the GPU-only
+ * memory query. Replacement temporarily needs two payloads; promptly destroy old
+ * handles (the context never frees caller-owned handles). Create/restore do not
+ * execute the model. Epoch exhaustion rejects create without replacing the handle.
+ * Handles are opaque: forged pointers and use after destroy are invalid C usage. */
+int lunelette_metal_checkpoint_create(lunelette_metal *context,
+    lunelette_metal_checkpoint **checkpoint, char *error, size_t capacity);
+int lunelette_metal_checkpoint_restore(lunelette_metal *context,
+    const lunelette_metal_checkpoint *checkpoint, const float **logits,
+    char *error, size_t capacity);
+void lunelette_metal_checkpoint_destroy(lunelette_metal_checkpoint *checkpoint);
 
 #endif

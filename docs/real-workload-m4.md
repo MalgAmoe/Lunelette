@@ -21,7 +21,14 @@ Unknown enum values fail before opening the checkpoint; there is no fallback.
 CLI selection is `--metal-strategy resident-fp32|compact-fp8-arithmetic`.
 The native service requires explicit `--strategy` with the same pair, alongside its
 existing explicit model, tokenizer, context256, chunk256, prefill and port settings.
-Unknown or duplicate options fail before loading. `--metal-prefill mps|custom`
+The Python client accepts `--native-strategy resident-fp32|compact-fp8-arithmetic`
+(default resident) alongside `--native-model` and `--native-tokenizer`. It verifies
+the returned strategy, rejects a mismatch with child cleanup, and records strategy
+identity even when the scenario fails. Programmatic `Service` callers opt into
+this check with `expected_strategy`; the CLI always supplies it. It does not infer numerical acceptance from
+startup readiness or published validation metadata.
+
+Unknown or duplicate server options fail before loading. `--metal-prefill mps|custom`
 (CLI), or `--prefill mps|custom` (service), is an independent choice.
 
 | Path | Resident FP32 | Compact FP8 arithmetic |
@@ -81,12 +88,15 @@ not hidden in overhead.
 
 `lunelette_metal_get_memory` sums owned buffer lengths without mutating the context.
 Service identity uses that query, separates conversion-stage bytes, and reports
-shape/prefill/head kernel policy. The service still emits the historical B field
-`compact_model_validation: NOT_RUN` and accompanying model-free-only scope text.
-These are static build-era labels, not a dynamic attestation or the current M4
-milestone status. The bounded C/D evidence below is external validation of a pinned
-source/model configuration, not certification of every supplied file. Known strict
-independent-reference mismatch status is retained separately. Info formatting
+shape/prefill/head kernel policy. For compact, `compact_model_validation` is
+`external_evidence_only` (resident: `not_applicable`), replacing the stale B-era
+`NOT_RUN` label. `numerical_comparison_performed_at_startup` is false and
+`published_validation_document` identifies `docs/real-workload-m4.md`. These fields
+point to published bounded evidence; they do not certify the supplied model or run
+a comparator at startup. Loader/domain admission checks still run normally.
+The legacy `numerical_validation` diagnostic label refers
+to published strict reference mismatches, not a new comparison of the loaded file.
+Known strict failures remain separately documented. Info formatting
 checks its fixed capacity. Host metadata, command/MPS objects, load transients and
 allocator/driver costs are excluded; driver memory remains null. Named totals are
 not physical peaks or performance measurements.

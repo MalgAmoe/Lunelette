@@ -57,6 +57,55 @@ def runner_faults(directory):
             "--output", str(Path(directory) / "wrong-mode")]), contextlib.redirect_stderr(io.StringIO()):
         check(real_workload.main() == 1)
         check(not launch.called)
+    # Client selection is passed explicitly, checked against /info and recorded.
+    for selected in (None, "resident-fp32", "compact-fp8-arithmetic"):
+        output = Path(directory) / ("select-" + str(selected))
+        expected = selected or "resident-fp32"
+        argv = ["runner", "--server", "unused", "--scenario", str(native_scenario),
+                "--output", str(output), "--native-model", "model", "--native-tokenizer", "tokenizer"]
+        if selected:
+            argv += ["--native-strategy", selected]
+        with patch.object(real_workload, "Service") as launch, patch.object(sys, "argv", argv), \
+                patch.object(real_workload, "run", return_value={"protocol_success": True}):
+            output.mkdir()
+            launch.return_value.close.return_value = True
+            launch.return_value.info = {"execution_strategy": expected}
+            check(real_workload.main() == 0)
+            keywords = launch.call_args.kwargs
+            check(keywords["expected_strategy"] == expected)
+            arguments = keywords["native_args"]
+            check(arguments[arguments.index("--strategy") + 1] == expected)
+            check(json.loads((output / "result.json").read_text())["execution_strategy"] == expected)
+    failed_output = Path(directory) / "native-scenario-failure"
+    failed_output.mkdir()
+    with patch.object(real_workload, "Service") as launch, patch.object(sys, "argv", [
+            "runner", "--server", "unused", "--scenario", str(native_scenario),
+            "--output", str(failed_output), "--native-model", "model", "--native-tokenizer", "tokenizer",
+            "--native-strategy", "compact-fp8-arithmetic"]), \
+            patch.object(real_workload, "run", side_effect=RuntimeError("scenario failure")), \
+            contextlib.redirect_stderr(io.StringIO()):
+        launch.return_value.info = {"execution_strategy": "compact-fp8-arithmetic"}
+        launch.return_value.close.return_value = True
+        check(real_workload.main() == 1)
+        launch.return_value.close.assert_called_once()
+        report = json.loads((failed_output / "result.json").read_text())
+        check(report["execution_strategy"] == "compact-fp8-arithmetic")
+        check(report["protocol_success"] is False and "scenario failure" in report["error"])
+    for selected in ("resident-fp32", "compact-fp8-arithmetic", "invalid"):
+        with patch.object(real_workload, "Service") as launch, patch.object(sys, "argv", [
+                "runner", "--server", "unused", "--scenario", str(native_scenario),
+                "--output", str(Path(directory) / "reject-strategy"), "--native-strategy", selected]), \
+                contextlib.redirect_stderr(io.StringIO()):
+            if selected == "invalid":
+                try:
+                    real_workload.main()
+                except SystemExit as error:
+                    check(error.code == 2)
+                else:
+                    raise RuntimeError("invalid strategy accepted")
+            else:
+                check(real_workload.main() == 1)
+            check(not launch.called)
     # Preserve an unterminated startup diagnostic on EOF.
     child = Path(directory) / "native-startup-child"
     child.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('unfinished diagnostic')\n")
@@ -92,6 +141,27 @@ def runner_faults(directory):
     finally:
         cleanup(service)
     check((Path(directory) / "stderr-drain/server.stderr").stat().st_size > 1048576)
+    compact, resident = "compact-fp8-arithmetic", "resident-fp32"
+    for index, (expected, actual) in enumerate([(compact, compact), (compact, resident),
+            (compact, None), (compact, "absent"), (resident, resident), (resident, compact)]):
+        output = Path(directory) / f"identity-{index}"
+        with patch.object(Service, "request", side_effect=[
+                (200, {"model_loaded": True, "runtime_ready": True}),
+                (200, {"generator": "native_greedy",
+                       "numerical_validation": "diagnostic_known_reference_mismatches",
+                       **({} if actual == "absent" else {"execution_strategy": actual})})]):
+            try:
+                owned = Service(child, output, native_args=["--strategy", expected],
+                                expected_strategy=expected)
+            except RuntimeError as error:
+                check(actual != expected and "strategy mismatch" in str(error))
+            else:
+                try:
+                    check(actual == expected)
+                finally:
+                    cleanup(owned)
+        records = [json.loads(line) for line in (output / "client.ndjson").read_text().splitlines()]
+        check(any(r["kind"] == "shutdown" and r["returncode"] == 0 for r in records))
     scenario_path = Path(directory) / "fault.json"
     scenario = {"version": 1, "mode": "controlled_protocol_only",
                 "operations": [{"op": "generate", "id": "fault", "budget": 1}]}
@@ -330,6 +400,11 @@ def main():
                 check(raw(service.port, payload).startswith(
                     f"HTTP/1.1 {501 if length == 8192 else 400}".encode()))
             check(service.request("POST", "/sessions", {})[0] == 200)
+            # Omitted policy remains legacy: controls are unsupported, never a
+            # silently recomputed imitation of a retained-cache checkpoint.
+            check(service.request("POST", "/sessions/1/checkpoint", {"id": "save"})[0] == 501)
+            check(service.request("POST", "/sessions/1/restore",
+                                  {"id": "restore", "checkpoint_id": "1"})[0] == 501)
             check(service.request("DELETE", "/sessions/1/generate", {"id":"wrong-method", "budget":1})[0] == 501)
             check(service.request("GET", "/health", {"unknown":1})[0] == 400)
             check(service.request("POST", "/sessions/1/generate", {"id":"bad-budget", "budget":1.5})[0] == 400)
@@ -337,6 +412,10 @@ def main():
             # Partial multi-byte continuation and duplicate replay after reset.
             first = service.generate(1, "first", 3)
             status, retained = service.request("GET", "/requests/first")
+            check(retained["operation"] == "generate")
+            check(retained["cache_restored"] is False)
+            check(retained["metrics"]["metrics_version"] == 2)
+            check(retained["metrics"]["work_version"] == 1)
             check(status == 200 and first["metrics"] == retained["metrics"])
             check(first["metrics"]["test_only"] is True)
             check(first["metrics"]["process_phys_footprint_before_bytes"] is None)

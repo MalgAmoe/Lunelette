@@ -174,8 +174,12 @@ M2 adds `build/lunelette-server`: a native loopback resident-FP32 service with
 pinned text-only multi-turn framing, authoritative token continuation, UTF-8
 streaming, cancellation and request measurements. Context remains 256 tokens.
 Both MPS and custom-prefill short-session checks passed; numerical status remains
-**diagnostic**, with independent discrepancies unresolved. Tools, prefix
-checkpoints and longer context remain later work; M4 adds optional compact storage.
+**diagnostic**, with independent discrepancies unresolved. M4 adds optional compact
+storage. [M5](docs/real-workload-m5.md) adds experimental prefix checkpoint controls
+with bounded full-model/state checks and real HTTP workload evaluation. Task quality
+is unchanged; measured benefits depend on workload and are versus explicit full
+recomputation, not the legacy policy. Resident/legacy defaults remain unchanged.
+Tools and longer context remain later work.
 Protocol-test success is not model task success or performance evidence.
 
 M3 completes the bounded investigation and session/task evaluation, not independent

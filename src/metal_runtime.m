@@ -8,8 +8,42 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdatomic.h>
+
+/* Saturating process-wide identity allocation: address reuse cannot revive handles.
+ * init is used by production and synthetic owners alike. Zero means exhausted. */
+static _Atomic uint64_t last_identity;
+
+/* Only the test-specific runtime object overrides this allocation call. */
+#ifndef LUNELETTE_METAL_CHECKPOINT_ALLOC
+#define LUNELETTE_METAL_CHECKPOINT_ALLOC malloc
+#else
+extern void *LUNELETTE_METAL_CHECKPOINT_ALLOC(size_t);
+#endif
+
+struct lunelette_metal_checkpoint {
+    void *owner; /* Borrowed; handles must be destroyed before the context. */
+    uint64_t identity, epoch;
+    size_t length;
+    float logits[LUNELETTE_MODEL_VOCAB];
+};
 
 @implementation LuneletteMetalOwner
+- (instancetype)init
+{
+    self = [super init];
+    if (self) {
+        uint64_t previous = atomic_load(&last_identity);
+        while (previous != UINT64_MAX) {
+            if (atomic_compare_exchange_weak(&last_identity, &previous, previous + 1)) {
+                identity = previous + 1;
+                return self;
+            }
+        }
+        return nil;
+    }
+    return self;
+}
 @end
 
 /* malloc owns only the wrapper. bridge_retained/bridge_transfer explicitly move
@@ -276,6 +310,8 @@ int lunelette_metal_reset(lunelette_metal *context, char *error, size_t capacity
         }
         return -1;
     }
+    owner->active_checkpoint = NULL;
+    owner->endpoint_logits_valid = false;
     owner->length = 0;
     owner->valid = true;
     return 0;
@@ -307,6 +343,12 @@ static int execute(lunelette_metal *context, const int64_t *ids, size_t count,
     }
     @autoreleasepool {
         /* No state publication until all encoders, completion and finite checks succeed. */
+        /* Clear endpoint publication before any scratch/model work. A failed
+         * execution must also invalidate the retained checkpoint, but a successful
+         * suffix must preserve it. Save its borrowed identity until success. */
+        lunelette_metal_checkpoint *checkpoint = owner->active_checkpoint;
+        owner->active_checkpoint = NULL;
+        owner->endpoint_logits_valid = false;
         owner->valid = false;
         if (count > 1 && owner->prefill_mode == LUNELETTE_METAL_PREFILL_MPS &&
             lunelette_metal_mps_prepare(owner, count, error, capacity) != 0) {
@@ -351,6 +393,8 @@ static int execute(lunelette_metal *context, const int64_t *ids, size_t count,
         }
         owner->length += count;
         owner->valid = true;
+        owner->endpoint_logits_valid = true;
+        owner->active_checkpoint = checkpoint;
         *logits = output;
         return 0;
     }
@@ -408,4 +452,91 @@ int lunelette_metal_get_memory(const lunelette_metal *context, lunelette_metal_m
     }
     *memory = result;
     return 0;
+}
+
+int lunelette_metal_append(lunelette_metal *context, const int64_t *ids, size_t count,
+    const float **logits, char *error, size_t capacity)
+{
+    return execute(context, ids, count, false, logits, error, capacity);
+}
+
+int lunelette_metal_checkpoint_create(lunelette_metal *context,
+    lunelette_metal_checkpoint **checkpoint, char *error, size_t capacity)
+{
+    if (checkpoint) {
+        *checkpoint = NULL;
+    }
+    LuneletteMetalOwner *owner = get_owner(context);
+    if (!owner || !checkpoint || !owner->identity || !owner->valid ||
+        !owner->endpoint_logits_valid || !owner->length ||
+        owner->length > LUNELETTE_CONTEXT_LIMIT || owner->checkpoint_epoch == UINT64_MAX ||
+        owner->buffers[METAL_LOGITS].length < LUNELETTE_MODEL_VOCAB * sizeof(float)) {
+        if (error && capacity) {
+            snprintf(error, capacity, "Metal checkpoint requires valid endpoint/available epoch");
+        }
+        return -1;
+    }
+    const float *output = owner->buffers[METAL_LOGITS].contents;
+    for (size_t i = 0; i < LUNELETTE_MODEL_VOCAB; i++) {
+        if (!isfinite(output[i])) {
+            if (error && capacity) {
+                snprintf(error, capacity, "Metal checkpoint nonfinite logit %zu", i);
+            }
+            owner->valid = false;
+            owner->endpoint_logits_valid = false;
+            owner->active_checkpoint = NULL;
+            return -1;
+        }
+    }
+    lunelette_metal_checkpoint *saved = LUNELETTE_METAL_CHECKPOINT_ALLOC(sizeof *saved);
+    if (!saved) {
+        if (error && capacity) {
+            snprintf(error, capacity, "Metal checkpoint allocation failed");
+        }
+        return -1;
+    }
+    saved->owner = (__bridge void *)owner;
+    saved->identity = owner->identity;
+    saved->epoch = owner->checkpoint_epoch + 1;
+    saved->length = owner->length;
+    memcpy(saved->logits, output, sizeof saved->logits);
+    owner->checkpoint_epoch = saved->epoch;
+    owner->active_checkpoint = saved;
+    *checkpoint = saved;
+    return 0;
+}
+
+int lunelette_metal_checkpoint_restore(lunelette_metal *context,
+    const lunelette_metal_checkpoint *checkpoint, const float **logits,
+    char *error, size_t capacity)
+{
+    if (logits) {
+        *logits = NULL;
+    }
+    LuneletteMetalOwner *owner = get_owner(context);
+    if (!owner || !logits || !checkpoint || owner->active_checkpoint != checkpoint ||
+        checkpoint->identity != owner->identity || checkpoint->epoch != owner->checkpoint_epoch ||
+        !owner->valid || !checkpoint->length || checkpoint->length > owner->length ||
+        owner->buffers[METAL_LOGITS].length < sizeof checkpoint->logits) {
+        if (error && capacity) {
+            snprintf(error, capacity, "Metal checkpoint stale, invalid or wrong context");
+        }
+        return -1;
+    }
+    memcpy(owner->buffers[METAL_LOGITS].contents, checkpoint->logits, sizeof checkpoint->logits);
+    owner->length = checkpoint->length;
+    owner->endpoint_logits_valid = true;
+    *logits = owner->buffers[METAL_LOGITS].contents;
+    return 0;
+}
+
+void lunelette_metal_checkpoint_destroy(lunelette_metal_checkpoint *checkpoint)
+{
+    if (checkpoint) {
+        LuneletteMetalOwner *owner = (__bridge LuneletteMetalOwner *)checkpoint->owner;
+        if (owner->active_checkpoint == checkpoint) {
+            owner->active_checkpoint = NULL;
+        }
+        free(checkpoint);
+    }
 }

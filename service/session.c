@@ -121,7 +121,8 @@ static int metrics(const service_request *r, int native, char *out, size_t size)
     if (r->first_token_ms >= 0) {
         snprintf(first, sizeof(first), "%.3f", r->first_token_ms);
     }
-    if (r->cancel_received_ms && strcmp(r->status, "generating")) {
+    if (r->cancel_received_ms && strcmp(r->status, "generating") &&
+        strcmp(r->status, "running")) {
         snprintf(cancel, sizeof(cancel), "%.3f", r->cancel_latency_ms);
     }
     if (!append(out, size, &n,
@@ -146,7 +147,27 @@ static int metrics(const service_request *r, int native, char *out, size_t size)
             return 0;
         }
     }
-    return append(out, size, &n, "]}");
+    if (!append(out, size, &n, "]")) {
+        return 0;
+    }
+    if ((!strcmp(r->operation, "checkpoint") || !strcmp(r->operation, "restore")) &&
+        !append(out, size, &n, ",\"materialize_ms\":%.3f,\"snapshot_ms\":%.3f,"
+                "\"restore_ms\":%.3f", r->materialize_ms, r->snapshot_ms, r->restore_ms)) {
+        return 0;
+    }
+    return append(out, size, &n, ",\"metrics_version\":2,\"suffix_us\":%llu,"
+        "\"suffix_steps\":%u,\"work_version\":1,\"work\":{"
+        "\"full_attempted\":%u,\"full_committed\":%u,"
+        "\"suffix_attempted\":%u,\"suffix_committed\":%u,"
+        "\"pending_attempted\":%u,\"pending_committed\":%u,"
+        "\"prefill_calls\":%u,\"append_calls\":%u,\"decode_calls\":%u,"
+        "\"decode_attempted\":%u,\"decode_committed\":%u,\"logit_restores\":%u}}",
+        (unsigned long long)r->suffix_us, r->suffix_steps,
+        r->work.full_attempted, r->work.full_committed,
+        r->work.suffix_attempted, r->work.suffix_committed, r->work.pending_attempted,
+        r->work.pending_committed, r->work.prefill_calls, r->work.append_calls,
+        r->work.decode_calls, r->work.decode_attempted, r->work.decode_committed,
+        r->work.logit_restores);
 }
 
 static void event_locked(service_session *s, const char *type, const char *text,
@@ -158,7 +179,7 @@ static void event_locked(service_session *s, const char *type, const char *text,
     }
     unsigned slot = (s->head + s->count) % SERVICE_EVENTS;
     service_request *r = &s->history[s->active];
-    char measured[6400] = "null";
+    char measured[SERVICE_METRIC_BYTES] = "null";
     int terminal = strcmp(type, "started") && strcmp(type, "text_delta");
     size_t used = 0;
     if ((terminal && !metrics(r, s->generator.info != NULL, measured, sizeof(measured))) ||
@@ -185,6 +206,121 @@ static int materialize(service_session *s)
     return s->generator.materialize(s->generator.context, s->tokens, s->logical);
 }
 
+static void add_work(service_work *total, const service_work *work)
+{
+    /* Context256 and at most 256 materializations bound each request's token
+     * sums by 65536 and its call counts by 256, well below unsigned capacity. */
+    total->full_attempted += work->full_attempted;
+    total->full_committed += work->full_committed;
+    total->suffix_attempted += work->suffix_attempted;
+    total->suffix_committed += work->suffix_committed;
+    total->pending_attempted += work->pending_attempted;
+    total->pending_committed += work->pending_committed;
+    total->prefill_calls += work->prefill_calls;
+    total->append_calls += work->append_calls;
+    total->decode_calls += work->decode_calls;
+    total->decode_attempted += work->decode_attempted;
+    total->decode_committed += work->decode_committed;
+    total->logit_restores += work->logit_restores;
+}
+
+/* Called with the lock held; callbacks remain worker-only and unlocked. */
+static void control_job(service_session *s, service_request *r)
+{
+    char phase[16];
+    strcpy(phase, r->before_state);
+    int saving = !strcmp(r->operation, "checkpoint");
+    int result = 0, mutated = 0;
+    service_work receipt = {0};
+    double start = milliseconds();
+    double materialize_ms = 0, snapshot_ms = 0, restore_ms = 0;
+    r->memory_before = s->generator.info ? service_process_footprint() : 0;
+    r->prompt = s->logical;
+    /* Charge pending framing once, including branch input discarded by restore. */
+    r->framing_ms = s->framing_ms;
+    s->framing_ms = 0;
+    pthread_mutex_unlock(&s->lock);
+    if (saving) {
+        result = materialize(s);
+        materialize_ms = milliseconds() - start;
+        /* Materialization may have changed KV even on failure. */
+        mutated = 1;
+        if (s->generator.work) {
+            s->generator.work(s->generator.context, &receipt);
+        }
+        if (result) {
+            double tick = milliseconds();
+            result = s->generator.save(s->generator.context);
+            snapshot_ms = milliseconds() - tick;
+        } else {
+            result = -1;
+        }
+    } else {
+        result = s->generator.restore(s->generator.context);
+        restore_ms = milliseconds() - start;
+        mutated = result != 0;
+        if (s->generator.work) {
+            s->generator.work(s->generator.context, &receipt);
+        }
+    }
+    pthread_mutex_lock(&s->lock);
+    r->materialize_ms = materialize_ms;
+    r->snapshot_ms = snapshot_ms;
+    r->restore_ms = restore_ms;
+    r->work = receipt;
+    r->reused = receipt.reused;
+    r->newly_processed = receipt.full_committed + receipt.suffix_committed +
+        receipt.decode_committed;
+    if (saving && result >= 0) {
+        /* A failed snapshot allocation cannot undo successful materialization. */
+        s->committed = s->logical;
+        s->pending = 0;
+    }
+    if (result == 1 && !s->cancel && !s->stop) {
+        if (saving) {
+            memcpy(s->checkpoint_tokens, s->tokens, s->logical * sizeof(*s->tokens));
+            s->checkpoint_length = s->logical;
+            strcpy(s->checkpoint_phase, phase);
+            s->checkpoint_id = ++s->checkpoint_serial;
+        } else {
+            memcpy(s->tokens, s->checkpoint_tokens,
+                   s->checkpoint_length * sizeof(*s->tokens));
+            s->logical = s->checkpoint_length;
+            s->committed = s->generator.prefix_reuse == 1 ? s->logical : 0;
+            s->pending = s->utf8_length = 0;
+            strcpy(phase, s->checkpoint_phase);
+            r->cache_restored = s->generator.prefix_reuse == 1;
+        }
+        r->checkpoint_id = s->checkpoint_id;
+        strcpy(r->status, "completed");
+        strcpy(s->state, phase);
+    } else {
+        strcpy(r->status, s->cancel || s->stop ? "cancelled" : "error");
+        if (result < 0 || ((s->cancel || s->stop) && mutated)) {
+            strcpy(s->state, "needs_reset");
+            s->checkpoint_id = s->checkpoint_length = 0;
+            pthread_mutex_unlock(&s->lock);
+            if (s->generator.invalidate) {
+                s->generator.invalidate(s->generator.context);
+            }
+            pthread_mutex_lock(&s->lock);
+        } else {
+            strcpy(s->state, phase);
+        }
+    }
+    strcpy(r->state, s->state);
+    strcpy(r->stop_reason, !strcmp(r->status, "completed") ? "none" : "control_failure");
+    r->logical = s->logical;
+    r->committed = s->committed;
+    r->pending = s->pending;
+    r->memory_after = s->generator.info ? service_process_footprint() : 0;
+    r->total_ms = milliseconds() - start;
+    if (r->cancel_received_ms) {
+        r->cancel_latency_ms = milliseconds() - r->cancel_received_ms;
+    }
+    s->job = 0;
+}
+
 static void *worker(void *context)
 {
     service_session *s = context;
@@ -205,6 +341,10 @@ static void *worker(void *context)
             continue;
         }
         service_request *r = &s->history[s->active];
+        if (strcmp(r->operation, "generate")) {
+            control_job(s, r);
+            continue;
+        }
         unsigned budget = s->budget;
         double started = milliseconds();
         r->memory_before = s->generator.info ? service_process_footprint() : 0;
@@ -212,10 +352,12 @@ static void *worker(void *context)
         r->framing_ms = s->framing_ms;
         s->framing_ms = 0;
         r->first_token_ms = -1;
-        /* New input always ends in END_INST; native adapter recomputes it all.
-         * Partial continuation commits only its single pending generated ID. */
-        unsigned planned_reuse = s->generator.frame && s->logical && s->tokens[s->logical - 1] == 4
-                               ? 0 : s->committed;
+        unsigned planned_reuse = s->committed;
+        if (s->generator.begin) {
+            pthread_mutex_unlock(&s->lock);
+            s->generator.begin(s->generator.context);
+            pthread_mutex_lock(&s->lock);
+        }
         event_locked(s, "started", "", "none");
         const char *terminal = "completed", *reason = "budget";
         while (budget && !s->cancel && !s->stop) {
@@ -226,14 +368,28 @@ static void *worker(void *context)
             int valid = materialize(s);
             /* Quantize once; aggregates are sums of these executed-step samples. */
             uint64_t elapsed_us = (uint64_t)((milliseconds() - tick) * 1000.0);
+            service_work receipt = {0};
+            if (s->generator.work) {
+                s->generator.work(s->generator.context, &receipt);
+            }
             int token = valid ? s->generator.next(s->generator.context) : -1;
             double available = milliseconds();
             pthread_mutex_lock(&s->lock);
-            if (!r->generated && !planned_reuse) {
+            if (s->generator.work) {
+                add_work(&r->work, &receipt);
+                if (!r->generated) {
+                    planned_reuse = receipt.reused;
+                }
+            }
+            if ((!s->generator.work && !r->generated && !planned_reuse) ||
+                receipt.prefill_calls) {
                 r->prefill_steps++;
                 r->prefill_us += elapsed_us;
                 r->prefill_ms = r->prefill_us / 1000.0;
-            } else {
+            } else if (receipt.append_calls) {
+                r->suffix_steps++;
+                r->suffix_us += elapsed_us;
+            } else if (!s->generator.work || receipt.decode_calls) {
                 r->decode_us[r->decode_steps++] = elapsed_us;
                 r->decode_total_us += elapsed_us;
                 r->decode_ms = r->decode_total_us / 1000.0;
@@ -350,6 +506,13 @@ static void *worker(void *context)
             strcpy(s->state, !strcmp(reason, "eos") ? "ready" : "partial");
         } else {
             strcpy(s->state, "needs_reset");
+            /* Controller invalidity must invalidate the adapter checkpoint too. */
+            s->checkpoint_id = s->checkpoint_length = 0;
+            pthread_mutex_unlock(&s->lock);
+            if (s->generator.invalidate) {
+                s->generator.invalidate(s->generator.context);
+            }
+            pthread_mutex_lock(&s->lock);
         }
         r->total_ms = milliseconds() - started;
         if (r->cancel_received_ms) {
@@ -411,10 +574,20 @@ void service_destroy(service_session *s)
     pthread_mutex_destroy(&s->lock);
 }
 
+void service_disconnect_request(service_session *s, const char *id)
+{
+    pthread_mutex_lock(&s->lock);
+    if (s->job && !strcmp(s->history[s->active].operation, "generate") &&
+        !strcmp(s->history[s->active].id, id)) {
+        cancel_locked(s, "disconnect");
+    }
+    pthread_mutex_unlock(&s->lock);
+}
+
 void service_disconnect(service_session *s)
 {
     pthread_mutex_lock(&s->lock);
-    if (s->job) {
+    if (s->job && !strcmp(s->history[s->active].operation, "generate")) {
         cancel_locked(s, "disconnect");
     }
     pthread_mutex_unlock(&s->lock);
@@ -440,6 +613,8 @@ static void reset_locked(service_session *s)
     while (s->reset_job) {
         pthread_cond_wait(&s->wake, &s->lock);
     }
+    s->checkpoint_id = s->checkpoint_length = 0;
+    s->framing_ms = 0;
     s->logical = s->committed = s->pending = s->utf8_length = 0;
     strcpy(s->state, "ready");
 }
@@ -479,7 +654,7 @@ int service_route(service_session *s, const char *method, const char *path,
 {
     int status = 200;
     const char *error = NULL;
-    char error_request_id[65] = "";
+    char error_request_id[65] = "", admission_id[65] = "";
     tj_document d = {0};
     *stream = 0;
     pthread_mutex_lock(&s->lock);
@@ -606,14 +781,17 @@ int service_route(service_session *s, const char *method, const char *path,
             error = "reply_capacity";
             goto done;
         }
-        char measured[6400];
+        char measured[SERVICE_METRIC_BYTES];
         offset--;
         if (!metrics(request, s->generator.info != NULL, measured, sizeof(measured)) ||
             !append(reply, size, &offset,
-                ",\"session_id\":%u,\"before_state\":\"%s\","
+                ",\"operation\":\"%s\",\"checkpoint_id\":\"%llu\",\"cache_restored\":%s,"
+                "\"session_id\":%u,\"before_state\":\"%s\","
                 "\"before_logical_tokens\":%u,\"before_committed_tokens\":%u,"
                 "\"before_pending_tokens\":%u,\"session_valid\":%s,\"recovery\":\"%s\","
                 "\"metrics\":%s,\"token_ids\":[",
+                request->operation, (unsigned long long)request->checkpoint_id,
+                request->cache_restored ? "true" : "false",
                 request->session_id, request->before_state, request->before_logical,
                 request->before_committed, request->before_pending,
                 !strcmp(request->state, "needs_reset") ? "false" : "true",
@@ -676,23 +854,34 @@ int service_route(service_session *s, const char *method, const char *path,
         error = "unsupported_operation";
         goto done;
     }
-    if (*op && strcmp(op, "/generate") && strcmp(op, "/messages") && strcmp(op, "/reset")) {
+    if (*op && strcmp(op, "/generate") && strcmp(op, "/messages") && strcmp(op, "/reset") &&
+        strcmp(op, "/checkpoint") && strcmp(op, "/restore")) {
         status = 501;
         error = "unsupported_operation";
         goto done;
     }
     const char *fields = !strcmp(op, "/generate") ? "|id||budget|" :
-                         !strcmp(op, "/messages") ? "|role||content|" : "";
+                         !strcmp(op, "/messages") ? "|role||content|" :
+                         !strcmp(op, "/checkpoint") ? "|id|" :
+                         !strcmp(op, "/restore") ? "|id||checkpoint_id|" : "";
     if (!service_json(body, length, fields, &d)) {
         status = 400;
         error = "invalid_json_or_fields";
         goto done;
     }
-    if (!strcmp(op, "/generate")) {
+    int control = !strcmp(op, "/checkpoint") || !strcmp(op, "/restore");
+    if (control && (!s->generator.prefix_reuse || !s->generator.save || !s->generator.restore)) {
+        status = 501;
+        error = "unsupported_operation";
+        goto done;
+    }
+    if (!strcmp(op, "/generate") || control) {
         unsigned id = tj_field(&d, 1, "id"), budget;
         unsigned b = tj_field(&d, 1, "budget");
+        budget = 0;
         if (!id || d.nodes[id].kind != '"' || !d.nodes[id].length ||
-            d.nodes[id].length > 64 || !tj_integer(&d, b, &budget) || !budget || budget > 256) {
+            d.nodes[id].length > 64 || (!control &&
+            (!tj_integer(&d, b, &budget) || !budget || budget > 256))) {
             status = 400;
             error = "invalid_generation";
             goto done;
@@ -722,11 +911,48 @@ int service_route(service_session *s, const char *method, const char *path,
             error = "busy_or_invalid_state";
             goto done;
         }
-        if (s->generator.frame && (!s->logical ||
+        if (!control && s->generator.frame && (!s->logical ||
             (!strcmp(s->state, "ready") && s->tokens[s->logical - 1] == s->generator.eos))) {
             status = 409;
             error = "user_input_required";
             goto done;
+        }
+        if (control) {
+            if (!strcmp(op, "/checkpoint")) {
+                if (!s->logical || s->utf8_length) {
+                    status = 409;
+                    error = "checkpoint_boundary_required";
+                    goto done;
+                }
+                if (s->checkpoint_serial == UINT64_MAX) {
+                    status = 503;
+                    error = "checkpoint_id_capacity_restart_required";
+                    goto done;
+                }
+            } else {
+                unsigned node = tj_field(&d, 1, "checkpoint_id");
+                uint64_t value = 0;
+                if (!node || d.nodes[node].kind != '"' || !d.nodes[node].length ||
+                    d.nodes[node].length > 20) {
+                    status = 400;
+                    error = "invalid_checkpoint_id";
+                    goto done;
+                }
+                for (size_t i = 0; i < d.nodes[node].length; i++) {
+                    unsigned digit = (unsigned)d.nodes[node].text[i] - '0';
+                    if (digit > 9 || value > (UINT64_MAX - digit) / 10) {
+                        status = 400;
+                        error = "invalid_checkpoint_id";
+                        goto done;
+                    }
+                    value = value * 10 + digit;
+                }
+                if (!value || value != s->checkpoint_id) {
+                    status = 409;
+                    error = "stale_checkpoint_id";
+                    goto done;
+                }
+            }
         }
         if (budget > 256 - s->logical) {
             status = 422;
@@ -738,8 +964,18 @@ int service_route(service_session *s, const char *method, const char *path,
             error = "request_id_capacity_restart_required";
             goto done;
         }
+        /* Reserve the bounded control envelope before admitting a job. */
+        if (control && size < 512) {
+            status = 500;
+            error = "reply_capacity";
+            goto done;
+        }
         s->active = s->requests++;
         service_request *admitted = &s->history[s->active];
+        strcpy(admitted->operation, control ? op + 1 : "generate");
+        if (!strcmp(op, "/restore")) {
+            admitted->checkpoint_id = s->checkpoint_id;
+        }
         admitted->session_id = s->session;
         strcpy(admitted->before_state, s->state);
         admitted->before_logical = s->logical;
@@ -747,13 +983,19 @@ int service_route(service_session *s, const char *method, const char *path,
         admitted->before_pending = s->pending;
         admitted->first_token_ms = -1;
         strcpy(s->history[s->active].id, request_id);
-        strcpy(s->history[s->active].status, "generating");
-        strcpy(s->state, "generating");
+        strcpy(s->history[s->active].status, control ? "running" : "generating");
+        strcpy(s->state, control ? "control" : "generating");
         s->budget = budget;
         s->cancel = 0;
-        s->head = s->count = 0;
+        if (!control) {
+            s->head = s->count = 0;
+        }
         s->job = 1;
-        *stream = 1;
+        *stream = !control;
+        status = control ? 202 : 200;
+        if (control) {
+            strcpy(admission_id, request_id);
+        }
         pthread_cond_signal(&s->wake);
         goto snapshot;
     }
@@ -816,11 +1058,27 @@ int service_route(service_session *s, const char *method, const char *path,
     }
     status = 501; error = "unsupported_operation";
     goto done;
-snapshot:
-    snprintf(reply, size, "{\"session_id\":%u,\"state\":\"%s\",\"logical_tokens\":%u,"
-             "\"committed_tokens\":%u,\"pending_tokens\":%u,\"remaining\":%u}",
-             s->session, s->state, s->logical, s->committed,
-             s->pending, 256 - s->logical);
+snapshot: {
+    size_t offset = 0;
+    if (!append(reply, size, &offset,
+                "{\"session_id\":%u,\"state\":\"%s\",\"logical_tokens\":%u,"
+                "\"committed_tokens\":%u,\"pending_tokens\":%u,\"remaining\":%u}",
+                s->session, s->state, s->logical, s->committed,
+                s->pending, 256 - s->logical)) {
+        status = 500;
+        error = "reply_capacity";
+        goto done;
+    }
+    if (admission_id[0]) {
+        offset--;
+        if (!append(reply, size, &offset, ",\"id\":\"%s\",\"operation\":\"%s\","
+                    "\"status\":\"running\"}", admission_id, s->history[s->active].operation)) {
+            status = 500;
+            error = "reply_capacity";
+            goto done;
+        }
+    }
+}
     if (s->generator.frame && !error && reply[0] && strlen(reply) + 3000 < size) {
         size_t offset = strlen(reply) - 1;
         offset += (size_t)snprintf(reply + offset, size - offset, ",\"token_ids\":[");
