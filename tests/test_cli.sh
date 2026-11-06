@@ -56,3 +56,12 @@ if test -c /dev/null; then
     rm test_tokenizer_fixture.tmp
     grep 'Writing prompt IDs to stdout failed' cli-test.err >/dev/null
 fi
+
+reject --metal-strategy bad
+grep -- '--metal-strategy must be' cli-test.err >/dev/null
+reject --metal-strategy
+reject --metal-strategy resident-fp32 --metal-strategy compact-fp8-arithmetic
+for strategy in resident-fp32 compact-fp8-arithmetic; do
+    reject --metal-strategy "$strategy" --tokenizer missing --prompt x --dump-prompt-ids
+    if grep 'Unknown or duplicate\|--metal-strategy must be' cli-test.err >/dev/null; then exit 1; fi
+done

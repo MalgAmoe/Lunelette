@@ -23,8 +23,11 @@ python3 tools/real_workload.py --server build/lunelette-server \
   --scenario tools/scenarios/native-short-v1.json --output /path/to/new-results
 ```
 
-All native configuration is required; only `mps|custom`, context/chunk 256 and
-resident-fp32 are supported. No fake switch, default weights or fallback.
+All native configuration is required; `mps|custom` and context/chunk 256 remain
+fixed choices. M2 used `resident-fp32`; [M4](real-workload-m4.md) also supports
+`--strategy compact-fp8-arithmetic` in the server. The convenience Python client
+shown above still launches resident FP32, not compact. No fake switch, default
+weights or fallback.
 The separate `build/test_service_server` remains model-free. The client has a
 180-second startup deadline, explicit native generation deadline 1..120 seconds
 (default 120), and four-second control-request sockets. Native shutdown has a
@@ -159,4 +162,7 @@ reporting bugs with regression coverage, and independently ran these checks.
 This closes the bounded M2 operational milestone, not full-spec acceptance or
 independent numerical correctness. Driver memory remains explicitly unavailable,
 process samples are not peaks, and no performance/task-quality claim is made.
-M3 numerical diagnosis and M4–M6 have not started.
+At M2 closure, M3 and later milestones had not started. For subsequent bounded
+investigation, task results and the provisional-control decision, see the
+[M3 disposition](real-workload-m3.md). M2 operational closure did not depend on
+resolving every independent-reference discrepancy.

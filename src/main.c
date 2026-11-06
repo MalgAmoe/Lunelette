@@ -11,7 +11,7 @@ static int usage(void)
 {
     return puts("Usage: lunelette --tokenizer TEKKEN --prompt TEXT [--system TEXT] [--raw]\n"
          "       [--weights MODEL.safetensors] [--max-new-tokens N]\n"
-         "       [--metal-prefill mps|custom]\n"
+         "       [--metal-prefill mps|custom] [--metal-strategy resident-fp32|compact-fp8-arithmetic]\n"
          "       [--dump-prompt-ids] [--dump-output-ids]\n"
          "Single-turn 3B text chat; no default system message. Raw: BOS + text.\n"
          "Generation requires the FP8 checkpoint; prompt-ID mode needs no weights.\n"
@@ -89,13 +89,13 @@ int main(int argc, char **argv)
     }
     const char *weights = NULL, *path = NULL;
     const char *prompt = NULL, *system = NULL;
-    const char *metal_prefill = NULL;
+    const char *metal_prefill = NULL, *metal_strategy = NULL;
     int raw = 0, dump = 0, output_ids = 0;
     unsigned seen = 0;
     lunelette_generation_config config = LUNELETTE_GENERATION_DEFAULT;
     const char *names[] = {"--weights", "--tokenizer", "--prompt",
         "--system", "--max-new-tokens", "--raw", "--dump-prompt-ids",
-        "--dump-output-ids", "--metal-prefill"};
+        "--dump-output-ids", "--metal-prefill", "--metal-strategy"};
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--backend") == 0 || strcmp(argv[i], "--uncached") == 0) {
             fputs("--backend and --uncached were retired; use the resident Metal/MPS runtime\n", stderr);
@@ -113,7 +113,7 @@ int main(int argc, char **argv)
         }
         seen |= 1u << option;
         const char *value = NULL;
-        if (option < 5 || option == 8) {
+        if (option < 5 || option >= 8) {
             if (++i == argc || strncmp(argv[i], "--", 2) == 0) {
                 fprintf(stderr, "Missing value for %s\n", names[option]);
                 return 1;
@@ -135,11 +135,17 @@ int main(int argc, char **argv)
         case 6: dump = 1; break;
         case 7: output_ids = 1; break;
         case 8: metal_prefill = value; break;
+        case 9: metal_strategy = value; break;
         }
     }
     if (metal_prefill && strcmp(metal_prefill, "mps") != 0 &&
             strcmp(metal_prefill, "custom") != 0) {
         fputs("--metal-prefill must be mps or custom\n", stderr);
+        return 1;
+    }
+    if (metal_strategy && strcmp(metal_strategy, "resident-fp32") &&
+        strcmp(metal_strategy, "compact-fp8-arithmetic")) {
+        fputs("--metal-strategy must be resident-fp32 or compact-fp8-arithmetic\n", stderr);
         return 1;
     }
     if (!path || !prompt || (raw && system) || (!dump && !weights)) {
@@ -192,6 +198,9 @@ int main(int argc, char **argv)
         lunelette_metal_options metal_options = LUNELETTE_METAL_OPTIONS_DEFAULT;
         if (metal_prefill && strcmp(metal_prefill, "custom") == 0) {
             metal_options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
+        }
+        if (metal_strategy && !strcmp(metal_strategy, "compact-fp8-arithmetic")) {
+            metal_options.strategy = LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC;
         }
         metal = lunelette_metal_create_with_options(weights, &metal_options,
             error, sizeof error);

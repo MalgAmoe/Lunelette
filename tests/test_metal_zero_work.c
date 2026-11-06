@@ -18,6 +18,7 @@ static int64_t prompt_id = 42;
 static int metadata_fails;
 static size_t opens, closes, creates, callbacks, decodes;
 static int tokenizer_marker;
+static lunelette_metal_strategy expected_strategy;
 
 int lunelette_tokenizer_open(const char *path, lunelette_tokenizer **out,
     char *error, size_t capacity)
@@ -90,7 +91,7 @@ lunelette_metal *lunelette_metal_create_with_options(const char *first,
     const lunelette_metal_options *options, char *error, size_t capacity)
 {
     (void)first;
-    (void)options;
+    CHECK(options && options->strategy == expected_strategy);
     creates++;
     snprintf(error, capacity, "deliberate GPU creation rejection");
     return NULL;
@@ -181,6 +182,23 @@ int main(void)
     opens = creates = 0;
     CHECK(lunelette_cli_main(argc, args) == 1);
     CHECK(opens == 0 && creates == 1 && callbacks == 0);
+    char *selected[12];
+    memcpy(selected, args, sizeof args);
+    selected[argc] = "--metal-strategy";
+    selected[argc + 1] = "compact-fp8-arithmetic";
+    selected[argc - 1] = "0";
+    opens = closes = creates = 0;
+    CHECK(lunelette_cli_main(argc + 2, selected) == 0);
+    CHECK(opens == 1 && closes == 1 && creates == 0);
+    selected[argc - 1] = "1";
+    expected_strategy = LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC;
+    creates = opens = 0;
+    CHECK(lunelette_cli_main(argc + 2, selected) == 1);
+    CHECK(creates == 1 && opens == 0);
+    selected[argc + 1] = "bad";
+    opens = creates = 0;
+    CHECK(lunelette_cli_main(argc + 2, selected) == 1);
+    CHECK(opens == 0 && creates == 0);
     puts("Metal zero-work CLI: metadata required, no GPU creation or logits callback PASS");
     return 0;
 }

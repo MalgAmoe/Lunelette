@@ -84,24 +84,34 @@ Multi-token block projections default to **MPS**. Select
 `--metal-prefill custom` explicitly for the custom path;
 there is no silent fallback on MPS errors. Decode, single-token prefill and the
 vocabulary head use custom arithmetic. Removed engine selectors fail explicitly.
-Weights, activations and KV storage are FP32. The loader expands 182 FP8 projections
+By default weights, activations and KV storage are FP32. The loader expands 182
+FP8 projections
 with scalar BF16 multipliers directly into FP32, with no BF16 rounding. The
 embedding/head and 53 norms remain BF16 inputs. Activation scales are checked but
 unused: this is weight-dequantized FP32 execution, **not W8A8**. MPS
 Float32 storage does **not** establish full-FP32 internal accumulation: Apple's
 inspected API does not specify it. Custom kernels use precise FP32 math.
 Historical CPU reduction contracts are retained as provenance only.
-See [Metal usage, memory, ownership, precision and validation](docs/metal.md).
+Select `--metal-strategy compact-fp8-arithmetic` to retain packed projection
+weights: single-token projections reconstruct weights during computation;
+multi-token projections convert through one FP32 stage before MPS/custom work.
+Embedding/head, norms, activations and KV remain FP32. Resident FP32 stays default.
+See [M4 contracts, validation and measured tradeoff](docs/real-workload-m4.md) and
+[Metal usage, memory, ownership, precision and validation](docs/metal.md).
 
 ## What the numerical evidence covers
 
 The mixed-checkpoint loader is covered by exhaustive FP8 encoding tests and
 synthetic metadata/scalar-read tests. Optional exact decoded-weight and independent
-FP32 prefill/cached-decode comparisons require fresh fixtures from this checkpoint.
+FP32 prefill/cached-decode comparisons require provenance-matched fixtures from
+this checkpoint; reuse existing frozen fixtures where appropriate.
 The external-reference threshold is frozen at `2e-4 + 1e-4*abs(reference)`;
 loading success and matching greedy IDs alone do not establish a numerical baseline.
 Current FP8-derived comparisons expose strict reference mismatches at fitting longer
-contexts; the numerical baseline remains pending. Do not substitute archived BF16
+contexts; independent numerical acceptance remains pending. The separate
+[native regression baseline](docs/native-regression.md) remains usable for
+unchanged-arithmetic comparisons. See the [M3 disposition](docs/real-workload-m3.md)
+for its provisional-control scope. Do not substitute archived BF16
 fixtures or infer 256-token correctness from short range probes.
 
 Historical CPU/BF16 evidence remains in the guides as provenance, not validation
@@ -135,11 +145,18 @@ The project's own distribution license has not yet been selected.
 ## Correctness roadmap
 
 The single-file FP8 checkpoint port does not change kernels or model math. Before
-calling it a numerical baseline, require fresh independently generated FP32
+calling it an independently validated numerical baseline, require independently generated FP32
 prefill, real multi-step cached decode, reset/reuse and near-256 comparisons for
 both MPS and custom. Keep the frozen external tolerance and raw mismatch vectors;
 resolve acceptance separately rather than quietly loosening a failing gate.
-Native FP8/W8A8 execution and resident-memory optimizations are out of scope.
+The existing native regression suite is the foundation for candidate comparisons;
+unresolved independent differences are not a blanket prohibition on provisional
+engineering experiments. Native FP8/W8A8 execution remains unsupported.
+M4's optional compact-storage
+strategy completed bounded native/state and task checks plus matched-work
+measurements under the [M3 conditions](docs/real-workload-m3.md#m4-entry-conditions).
+Known unchanged strict reference failures remain documented, not automatically a
+reason for another tracing campaign or an indefinite engineering blocker.
 
 ## Real-workload service development
 
@@ -158,5 +175,19 @@ pinned text-only multi-turn framing, authoritative token continuation, UTF-8
 streaming, cancellation and request measurements. Context remains 256 tokens.
 Both MPS and custom-prefill short-session checks passed; numerical status remains
 **diagnostic**, with independent discrepancies unresolved. Tools, prefix
-checkpoints, compact execution and longer context remain later work.
+checkpoints and longer context remain later work; M4 adds optional compact storage.
 Protocol-test success is not model task success or performance evidence.
+
+M3 completes the bounded investigation and session/task evaluation, not independent
+numerical acceptance. The [M3 disposition](docs/real-workload-m3.md) restores the
+existing layered testing strategy: operator checks, native regression, independent
+reference comparisons and task behavior remain separate. The frozen task panel
+passes three of seven examples; failures are retained.
+
+[M4](docs/real-workload-m4.md) completes optional compact FP8 storage in the same
+engine and service (`--strategy compact-fp8-arithmetic`). Tested native logits and
+state matched the control; all 64 task responses were unchanged. On the development
+machine, MPS decode was roughly 1.9–2.0x faster and sampled process footprint after
+warmup fell from 12.99 to 4.64 GiB, but prefill cost an extra ~0.11s. These bounded,
+battery-powered measurements are not peak-memory or general hardware guarantees.
+Compact remains optional; resident remains default.

@@ -217,7 +217,7 @@ int main(int argc, char **argv)
 #ifdef SERVICE_NATIVE
     service_generator generator = {0};
     if (!service_native_open(argc, argv, &generator, &port)) {
-        fprintf(stderr, "native service requires explicit --model --tokenizer --strategy resident-fp32 --context 256 --prefill-chunk 256 --prefill mps|custom --port N; startup failed\n");
+        fprintf(stderr, "native service requires explicit --model --tokenizer --strategy resident-fp32|compact-fp8-arithmetic --context 256 --prefill-chunk 256 --prefill mps|custom --port N; startup failed\n");
         return 2;
     }
 #else

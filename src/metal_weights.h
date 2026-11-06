@@ -1,6 +1,7 @@
 #ifndef LUNELETTE_METAL_WEIGHTS_H
 #define LUNELETTE_METAL_WEIGHTS_H
 
+#include "metal.h"
 #include "model_facts.h"
 #include "safetensors.h"
 
@@ -27,5 +28,12 @@ int lunelette_metal_weights_read_scales(lunelette_metal_weights *weights,
  * runtime construction must not publish that destination. */
 int lunelette_metal_weights_load(lunelette_metal_weights *weights, size_t index,
     float *out, size_t count);
+/* Compact-only admission domain and bounded raw loading. Exact count, F8 only.
+ * Failure may partially modify out; never publish a failed destination. */
+int lunelette_metal_weights_load_raw(lunelette_metal_weights *weights, size_t index,
+    unsigned char *out, size_t count, char *error, size_t capacity);
+/* Validates every allocation size and sums before allocation/admission. */
+int lunelette_metal_weights_account(const lunelette_metal_weights *weights,
+    lunelette_metal_strategy strategy, lunelette_metal_memory *memory);
 void lunelette_metal_weights_close(lunelette_metal_weights *weights);
 #endif

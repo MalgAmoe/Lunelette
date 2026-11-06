@@ -52,8 +52,8 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
 - No speculative backend frameworks, generic tensor systems, or dependencies.
 - Python is development/reference tooling, never a runtime requirement for C.
 - Keep the existing resident Metal/MPS engine; measure before optimizing.
-  Frozen independent PyTorch fixtures are the numerical oracle, not a second C
-  inference engine. CPU tokenization, parsing, metadata, generation policy and
+  Use frozen native regression controls and isolated operator checks for changes,
+  not a second C inference engine. CPU tokenization, parsing, metadata, generation policy and
   YaRN preparation remain required. Do not introduce backend dispatch wrappers.
 - Avoid loading entire model files when a bounded read suffices. Do not introduce
   complex caching or allocators before measurements justify them.
@@ -88,8 +88,32 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
   comparisons require justified tolerances and reported absolute/relative errors.
 - Record fixture provenance: model revision, prompt/token IDs, tokenizer settings,
   library versions, dtype/device, tensor shapes, layout, and capture points.
-- Generated text alone does not establish correctness. Compare intermediate
-  activations/logits and prefill/decode/reset behavior against independent reference fixtures.
+- Generated text alone does not establish correctness. Use immutable native
+  full-vector regression controls, isolated operator tests and prefill/decode/reset
+  checks; assess task quality and matched-work performance separately.
+- Retain agreed independent PyTorch-reference checks using frozen fixtures; this
+  does not imply regenerating references or launching a Python model. Preserve
+  finite-value checks and `abs(error) <= 2e-4 + 1e-4 * abs(reference)`; do not
+  relabel strict failures or refresh goldens/tolerances to erase discrepancies.
+- Keep independent checking, candidate/control regression and task behavior separate.
+  The native control is provisional, not an independent oracle or quality approval.
+  Match inputs, trajectories and execution conditions; check full finite logits,
+  relevant intermediates and continuation/reset/session state. Bitwise contracts
+  require preserved operations and rounding/reduction order, not just FP32 labels.
+  Explicitly revise the contract before interpreting changed precision/order.
+- Known independent mismatches, established unchanged from comparable artifacts and
+  metrics rather than failure counts, do not automatically reopen investigation or
+  block authorized engineering. Distinguish nonzero exits caused by infrastructure,
+  missing coverage or new mismatches; never blanket-ignore comparator failure.
+- Withhold acceptance for candidate/control contract regressions and debug within
+  authorized scope. Stop affected validation for nonfinite values, memory errors or
+  invalid session/KV state. Flag new/materially worse independent discrepancies.
+- A check does not authorize expanded cross-framework tracing. Before proposing it,
+  state what is new, the suspected defect, discriminating experiment, stopping
+  condition and decision impact; ask approval before expanding the study. This
+  supersedes the earlier blanket restriction on routine independent checks.
+- Preserve task prompts, scoring and control failures. Matching selected tokens is
+  not the only numerical test; faster failed/truncated tasks are not faster successes.
 - Do not claim untested GPU, quantization, long-context, batching, or vision support.
 
 ## Verification and completion

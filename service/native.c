@@ -6,6 +6,7 @@
 #include "generation.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
+#include <inttypes.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -181,8 +182,8 @@ static int native_next(void *context)
 
 int service_native_open(int argc, char **argv, service_generator *generator, unsigned *port)
 {
-    const char *model = NULL, *tokenizer = NULL, *prefill = NULL;
-    int strategy = 0, context = 0, chunk = 0, port_seen = 0;
+    const char *model = NULL, *tokenizer = NULL, *prefill = NULL, *strategy_name = NULL;
+    int context = 0, chunk = 0, port_seen = 0;
     for (int i = 1; i < argc; i += 2) {
         if (i + 1 == argc) {
             return 0;
@@ -192,8 +193,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             model = value;
         } else if (!strcmp(key, "--tokenizer") && !tokenizer) {
             tokenizer = value;
-        } else if (!strcmp(key, "--strategy") && !strategy && !strcmp(value, "resident-fp32")) {
-            strategy = 1;
+        } else if (!strcmp(key, "--strategy") && !strategy_name &&
+                   (!strcmp(value, "resident-fp32") || !strcmp(value, "compact-fp8-arithmetic"))) {
+            strategy_name = value;
         } else if (!strcmp(key, "--context") && !context && !strcmp(value, "256")) {
             context = 1;
         } else if (!strcmp(key, "--prefill-chunk") && !chunk && !strcmp(value, "256")) {
@@ -216,7 +218,7 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             return 0;
         }
     }
-    if (!model || !tokenizer || !strategy || !context || !chunk || !prefill || !port_seen) {
+    if (!model || !tokenizer || !strategy_name || !context || !chunk || !prefill || !port_seen) {
         return 0;
     }
     native_service *n = calloc(1, sizeof(*n));
@@ -236,7 +238,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         return 0;
     }
     lunelette_metal_options options = {
-        !strcmp(prefill, "mps") ? LUNELETTE_METAL_PREFILL_MPS : LUNELETTE_METAL_PREFILL_CUSTOM
+        !strcmp(prefill, "mps") ? LUNELETTE_METAL_PREFILL_MPS : LUNELETTE_METAL_PREFILL_CUSTOM,
+        !strcmp(strategy_name, "resident-fp32") ? LUNELETTE_METAL_RESIDENT_FP32 :
+            LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC
     };
     n->runtime = lunelette_metal_create_with_options(model, &options, error, sizeof(error));
     if (!n->runtime) {
@@ -246,23 +250,52 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         return 0;
     }
     n->loads++;
-    snprintf(n->info, sizeof(n->info),
+    lunelette_metal_memory memory;
+    if (lunelette_metal_get_memory(n->runtime, &memory) ||
+        memory.strategy != options.strategy) {
+        fprintf(stderr, "load: runtime strategy/allocation accounting query failed or strategy mismatch\n");
+        native_destroy(n);
+        return 0;
+    }
+    const char *actual_strategy = memory.strategy == LUNELETTE_METAL_RESIDENT_FP32 ?
+        "resident-fp32" : "compact-fp8-arithmetic";
+    int written = snprintf(n->info, sizeof(n->info),
         "{\"generator\":\"native_greedy\",\"model_loaded\":true,\"runtime_ready\":true,"
         "\"model_sha256\":\"%s\",\"tokenizer_sha256\":\"%s\","
         "\"tokenizer_remote_identity\":\"content_hash_only_see_framing_evidence\","
         "\"model_load_count\":%u,\"loading_duration_ms\":%.3f,"
-        "\"execution_strategy\":\"resident-fp32\",\"prefill\":\"%s\","
-        "\"precision_policy\":\"FP32 resident weights activations norms KV; MPS accumulation unspecified\","
+        "\"execution_strategy\":\"%s\",\"prefill\":\"%s\","
+        "\"precision_policy\":\"%s; FP32 activations norms embedding head KV; %s\","
+        "\"single_token_block_kernel\":\"%s\",\"head_kernel\":\"precise-FP32\","
+        "\"multi_token_block_kernel\":\"%s\","
         "\"context_capacity\":256,\"prefill_chunk_size\":256,\"event_bytes\":8192,"
         "\"conversation_protocol\":\"native-no-system-nonthinking-text-v1\","
         "\"tools\":false,\"checkpoints\":false,\"reuse_new_turn\":false,"
         "\"numerical_validation\":\"diagnostic_known_reference_mismatches\","
-        "\"numerical_validation_scope\":\"existing resident runtime; strict reference gates unresolved\","
-        "\"named_resident_weight_bytes\":13716025344,\"named_scratch_bytes\":87819264,"
-        "\"named_kv_bytes\":54525952,\"named_buffer_total_bytes\":13858370560,"
+        "\"numerical_validation_scope\":\"%s; strict independent reference gates unresolved\","
+        "\"compact_model_validation\":\"%s\","
+        "\"named_resident_weight_bytes\":%" PRIu64 ",\"named_conversion_stage_bytes\":%" PRIu64 ","
+        "\"named_scratch_bytes\":%" PRIu64 ",\"named_kv_bytes\":%" PRIu64 ","
+        "\"named_buffer_total_bytes\":%" PRIu64 ","
         "\"driver_memory_bytes\":null,\"build_commit\":\"%s\",\"build_dirty\":%s}",
-        model_hash, tokenizer_hash, n->loads, (seconds() - start) * 1000, prefill,
-        SERVICE_COMMIT, SERVICE_DIRTY);
+        model_hash, tokenizer_hash, n->loads, (seconds() - start) * 1000, actual_strategy, prefill,
+        memory.strategy ? "FP8 projection storage, FP32 reconstruction" : "FP32 resident weights",
+        options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS accumulation unspecified" :
+            "precise FP32 custom arithmetic",
+        memory.strategy ? "compact-FP8-arithmetic" : "precise-FP32",
+        memory.strategy ? (options.prefill == LUNELETTE_METAL_PREFILL_MPS ?
+            "FP8-convert-stage-then-MPS" : "FP8-convert-stage-then-precise-FP32") :
+            (options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS" : "precise-FP32"),
+        memory.strategy ? "compact candidate model validation NOT_RUN; model-free integration only" :
+            "existing resident runtime",
+        memory.strategy ? "NOT_RUN" : "not_applicable",
+        memory.weight_bytes, memory.conversion_stage_bytes, memory.scratch_bytes,
+        memory.kv_bytes, memory.total_bytes, SERVICE_COMMIT, SERVICE_DIRTY);
+    if (written < 0 || (size_t)written >= sizeof(n->info)) {
+        fprintf(stderr, "load: native info exceeds fixed capacity\n");
+        native_destroy(n);
+        return 0;
+    }
     *generator = (service_generator){n, native_next, native_materialize, native_reset,
                                     native_destroy, native_frame, native_piece, 2, n->info};
     return 1;

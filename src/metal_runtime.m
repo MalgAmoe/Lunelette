@@ -96,7 +96,8 @@ int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, si
             failure ? failure.localizedDescription.UTF8String : "no library");
         return -1;
     }
-    NSArray<NSString *> *names = @[@"project", @"norm", @"element", @"rope", @"scores", @"attend"];
+    NSArray<NSString *> *names = @[@"project", @"norm", @"element", @"rope", @"scores", @"attend",
+        @"convert_fp8", @"project_fp8"];
     for (size_t i = 0; i < METAL_PIPELINE_COUNT; i++) {
         id<MTLFunction> function = [library newFunctionWithName:names[i]];
         if (function) {
@@ -172,6 +173,12 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
         snprintf(error, capacity, "Metal invalid prefill option; select MPS or CUSTOM");
         return NULL;
     }
+    lunelette_metal_strategy strategy = options ? options->strategy : LUNELETTE_METAL_RESIDENT_FP32;
+    if (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
+        strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC) {
+        snprintf(error, capacity, "Metal invalid strategy; select resident-fp32 or compact-fp8-arithmetic");
+        return NULL;
+    }
     @autoreleasepool {
         lunelette_metal_weights staged;
         if (lunelette_metal_weights_open(&staged, path, error, capacity) != 0) {
@@ -190,20 +197,43 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
             snprintf(error, capacity, "Metal requires a supported Apple Silicon GPU (Apple7+)");
             goto cleanup;
         }
-        if (memory_guard(staged.bytes, error, capacity) != 0 ||
+        if (lunelette_metal_weights_account(&staged, strategy, &owner->memory)) {
+            snprintf(error, capacity, "Metal strategy allocation size preflight failed");
+            goto cleanup;
+        }
+        /* Stage is explicitly charged in the base, not hidden in guard overhead. */
+        if (memory_guard(owner->memory.weight_bytes + owner->memory.conversion_stage_bytes,
+                error, capacity) != 0 ||
             lunelette_metal_create_pipelines(owner, error, capacity) != 0) {
             goto cleanup;
         }
+        if (owner->memory.conversion_stage_bytes) {
+            owner->conversion_stage = [owner->device
+                newBufferWithLength:owner->memory.conversion_stage_bytes
+                options:MTLResourceStorageModeShared];
+            if (!owner->conversion_stage) {
+                snprintf(error, capacity, "Metal compact conversion stage allocation failed");
+                goto cleanup;
+            }
+        }
         for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+            bool compact = strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+                staged.weights[i].tensor->dtype == ST_F8_E4M3;
+            owner->scales[i] = staged.weights[i].scale;
             owner->weights[i] = [owner->device
-                newBufferWithLength:staged.weights[i].elements * sizeof(float)
+                newBufferWithLength:staged.weights[i].elements * (compact ? 1 : sizeof(float))
                 options:MTLResourceStorageModeShared];
             if (!owner->weights[i]) {
                 snprintf(error, capacity, "Metal weight allocation failed: %s",
                     staged.weights[i].tensor->name);
                 goto cleanup;
             }
-            if (lunelette_metal_weights_load(&staged, i,
+            if (compact) {
+                if (lunelette_metal_weights_load_raw(&staged, i, owner->weights[i].contents,
+                        staged.weights[i].elements, error, capacity)) {
+                    goto cleanup;
+                }
+            } else if (lunelette_metal_weights_load(&staged, i,
                     owner->weights[i].contents, staged.weights[i].elements) != 0) {
                 snprintf(error, capacity, "Metal weight decode/read failed: %s",
                     staged.weights[i].tensor->name);
@@ -336,4 +366,46 @@ int lunelette_metal_decode(lunelette_metal *context, int64_t token,
     const float **logits, char *error, size_t capacity)
 {
     return execute(context, &token, 1, false, logits, error, capacity);
+}
+
+int lunelette_metal_get_memory(const lunelette_metal *context, lunelette_metal_memory *memory)
+{
+    if (!context || !context->owner || !memory) {
+        return -1;
+    }
+    LuneletteMetalOwner *owner = (__bridge LuneletteMetalOwner *)context->owner;
+    lunelette_metal_memory result = {0};
+    result.strategy = owner->memory.strategy;
+    result.conversion_stage_bytes = owner->conversion_stage.length;
+    for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+        uint64_t bytes = owner->weights[i].length;
+        if (result.weight_bytes > UINT64_MAX - bytes) {
+            return -1;
+        }
+        result.weight_bytes += bytes;
+    }
+    for (size_t i = 0; i < METAL_BUFFER_COUNT; i++) {
+        uint64_t bytes = owner->buffers[i].length;
+        if (result.scratch_bytes > UINT64_MAX - bytes) {
+            return -1;
+        }
+        result.scratch_bytes += bytes;
+    }
+    for (size_t i = 0; i < LUNELETTE_MODEL_LAYERS; i++) {
+        uint64_t keys = owner->keys[i].length, values = owner->values[i].length;
+        if (keys > UINT64_MAX - values || result.kv_bytes > UINT64_MAX - keys - values) {
+            return -1;
+        }
+        result.kv_bytes += keys + values;
+    }
+    const uint64_t parts[] = {result.weight_bytes, result.conversion_stage_bytes,
+        result.scratch_bytes, result.kv_bytes};
+    for (size_t i = 0; i < sizeof parts / sizeof parts[0]; i++) {
+        if (result.total_bytes > UINT64_MAX - parts[i]) {
+            return -1;
+        }
+        result.total_bytes += parts[i];
+    }
+    *memory = result;
+    return 0;
 }

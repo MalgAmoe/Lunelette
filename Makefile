@@ -29,7 +29,7 @@ $(BUILD)/test_safetensors: tests/test_safetensors.c tests/fp8_golden.h src/safet
 $(BUILD)/compare_embeddings: tests/compare_embeddings.c src/safetensors.c include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/compare_embeddings.c src/safetensors.c -o $@ $(LDLIBS)
 
-$(BUILD)/test_metal_weights: tests/test_metal_weights.c src/metal_weights.c src/metal_weights.h src/model_facts.c include/model_facts.h src/safetensors.c include/safetensors.h | $(BUILD)
+$(BUILD)/test_metal_weights: tests/test_metal_weights.c src/metal_weights.c src/metal_weights.h include/metal.h src/model_facts.c include/model_facts.h src/safetensors.c include/safetensors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) tests/test_metal_weights.c src/metal_weights.c src/model_facts.c src/safetensors.c -o $@ $(LDLIBS)
 
 $(BUILD)/test_metal_zero_work: tests/test_metal_zero_work.c $(CLI_SOURCES) $(CLI_HEADERS) include/metal.h | $(BUILD)
@@ -92,8 +92,12 @@ $(BUILD)/test_metal: tests/test_metal.m tests/rope_golden.h $(METAL_OBJECTS) $(M
 	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) $(LDFLAGS) tests/test_metal.m $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
 
 .PHONY: metal-test
-metal-test: $(BUILD)/test_metal $(BUILD)/compare_metal
+$(BUILD)/test_metal_compact: tests/test_metal_compact.m $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) $(LDFLAGS) tests/test_metal_compact.m $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
+
+metal-test: $(BUILD)/test_metal $(BUILD)/compare_metal $(BUILD)/test_metal_compact
 	./$(BUILD)/test_metal
+	@./$(BUILD)/test_metal_compact; status=$$?; if [ $$status -eq 77 ]; then echo "SKIP compact model-free GPU integration"; elif [ $$status -ne 0 ]; then exit $$status; fi
 	./$(BUILD)/compare_metal --self-test
 
 $(BUILD)/metal_snapshot.o: tests/metal_snapshot.m $(METAL_HEADERS) | $(BUILD)
@@ -187,7 +191,7 @@ $(BUILD)/test_service_pieces: tests/test_service_pieces.c $(SERVICE_SOURCES) $(S
 
 ifeq ($(shell uname -s),Darwin)
 # Optional CPU-only native adapter test: runtime symbols are explicit test stubs.
-$(BUILD)/test_service_native: tests/test_service_native.c service/native.c service/native.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+$(BUILD)/test_service_native: tests/test_service_native.c service/native.c service/native.h include/metal.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_native.c service/native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ $(LDLIBS)
 endif
 

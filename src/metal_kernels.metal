@@ -130,3 +130,48 @@ kernel void attend(device const float *probabilities [[buffer(0)]],
     }
     output[index] = sum;
 }
+
+/* M4 arithmetic candidate: host admits only normal reconstructed products. */
+// E4M3FN: both 0x7f/0xff are rejected by the host before dispatch.
+inline float weight(uchar code, float scale)
+{
+    uint exponent = (code >> 3) & 15;
+    uint fraction = code & 7;
+    float value = exponent == 0 ? ldexp(float(fraction), -9) :
+        ldexp(1.0f + float(fraction) / 8.0f, int(exponent) - 7);
+    value = (code & 128) ? -value : value;
+    return value * scale;
+}
+kernel void convert_fp8(device const uchar *packed [[buffer(0)]],
+    constant float *scale [[buffer(1)]], device float *stage [[buffer(2)]],
+    constant uint4 &dims [[buffer(3)]], uint index [[thread_position_in_grid]])
+{
+    if (index < dims.x * dims.y) {
+        stage[index] = weight(packed[index], scale[0]);
+    }
+}
+// Same Kahan lane loop and SIMD sum as frozen project; only weight read differs.
+kernel void project_fp8(device const uchar *packed [[buffer(0)]],
+    device const float *input [[buffer(1)]], device float *output [[buffer(2)]],
+    constant uint4 &dims [[buffer(3)]], constant float *scale [[buffer(4)]],
+    uint group [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]], uint width [[threads_per_simdgroup]])
+{
+    uint row = group % dims.x;
+    uint token = group / dims.x;
+    float sum = 0;
+    float correction = 0;
+    uint limit = dims.y;
+    for (uint column = lane; column < limit; column += width) {
+        float product = weight(packed[row * dims.y + column], scale[0]) *
+            input[token * dims.y + column];
+        float value = product - correction;
+        float next = sum + value;
+        correction = (next - sum) - value;
+        sum = next;
+    }
+    sum = simd_sum(sum);
+    if (lane == 0) {
+        output[token * dims.x + row] = sum;
+    }
+}

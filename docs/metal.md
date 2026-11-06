@@ -31,7 +31,17 @@ no forward. A generated EOS is included in IDs and omitted from decoded text.
 There is no batching, static W8A8 execution, vision, multi-turn reuse or larger-context
 support. The larger checkpoint position limit is not a supported context claim.
 
-## Storage and numerical contract
+## Strategy selection
+
+The storage description below describes the resident FP32 default. Select
+`--metal-strategy compact-fp8-arithmetic` (or the corresponding C options enum) for
+the optional compact strategy. It keeps packed FP8 block projections and one stable
+FP32 conversion stage; embedding/head, norms, activations and KV stay FP32. Prefill
+policy `mps|custom` is independent of storage. No fallback occurs on admission or
+execution failure. See [M4](real-workload-m4.md) for the admitted payload domain,
+compact buffer/guard accounting, validation scope and measured prefill/decode tradeoff.
+
+## Storage and numerical contract (resident default)
 
 * Unique text weights are resident FP32, reconstructed directly from bounded mixed FP8/BF16
   reader chunks into final shared Metal buffers. No full host FP32 copy or

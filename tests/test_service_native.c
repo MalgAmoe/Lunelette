@@ -1,5 +1,6 @@
 #include "native.h"
 #include "metal.h"
+#include "tokenizer_json.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,9 +12,11 @@
 struct lunelette_metal {
     int64_t ids[256];
     unsigned count;
+    lunelette_metal_strategy strategy;
 };
 static unsigned creates, destroys, prefills, decodes, resets;
-static int fail;
+static int fail, fail_memory, wrong_strategy;
+static lunelette_metal_prefill_mode expected_prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
 static float logits[131072];
 lunelette_metal *lunelette_metal_create_with_options(const char *path,
     const lunelette_metal_options *options, char *error, size_t capacity)
@@ -21,9 +24,24 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
     (void)path;
     (void)error;
     (void)capacity;
-    CHECK(options->prefill == LUNELETTE_METAL_PREFILL_CUSTOM);
+    CHECK(options->prefill == expected_prefill);
     creates++;
-    return calloc(1, sizeof(lunelette_metal));
+    lunelette_metal *runtime = calloc(1, sizeof(lunelette_metal));
+    CHECK(runtime);
+    runtime->strategy = wrong_strategy ? LUNELETTE_METAL_RESIDENT_FP32 : options->strategy;
+    return runtime;
+}
+int lunelette_metal_get_memory(const lunelette_metal *runtime, lunelette_metal_memory *memory)
+{
+    CHECK(runtime && memory);
+    if (fail_memory) {
+        return -1;
+    }
+    *memory = (lunelette_metal_memory){runtime->strategy,
+        runtime->strategy ? 4637454336ULL : 13716025344ULL,
+        runtime->strategy ? 113246208ULL : 0, 87819264, 54525952,
+        runtime->strategy ? 4893045760ULL : 13858370560ULL};
+    return 0;
 }
 void lunelette_metal_destroy(lunelette_metal *runtime)
 {
@@ -139,6 +157,46 @@ int main(int argc, char **argv)
     generator.reset(generator.context);
     generator.destroy(generator.context);
     CHECK(creates == 1 && destroys == 1 && prefills == 3 && resets >= 4);
+    const char *strategies[] = {"bad", "", "COMPACT"};
+    for (size_t i = 0; i < sizeof strategies / sizeof strategies[0]; i++) {
+        arguments[6] = (char *)strategies[i];
+        CHECK(!service_native_open(15, arguments, &generator, &port));
+        CHECK(creates == 1);
+    }
+    arguments[6] = "compact-fp8-arithmetic";
+    char *duplicate[17];
+    memcpy(duplicate, arguments, sizeof arguments);
+    duplicate[15] = "--strategy";
+    duplicate[16] = "resident-fp32";
+    CHECK(!service_native_open(17, duplicate, &generator, &port));
+    CHECK(creates == 1);
+    CHECK(service_native_open(15, arguments, &generator, &port));
+    CHECK(strstr(generator.info, "\"execution_strategy\":\"compact-fp8-arithmetic\""));
+    CHECK(strstr(generator.info, "\"named_conversion_stage_bytes\":113246208"));
+    CHECK(strstr(generator.info, "\"named_buffer_total_bytes\":4893045760"));
+    CHECK(strstr(generator.info, "\"compact_model_validation\":\"NOT_RUN\""));
+    CHECK(strstr(generator.info, "FP8-convert-stage-then-precise-FP32"));
+    CHECK(!strstr(generator.info, "MPS accumulation unspecified"));
+    CHECK(strlen(generator.info) + 256 < 4096); /* /info process sample also fits. */
+    tj_document info;
+    CHECK(tj_read_memory(generator.info, strlen(generator.info), &info));
+    CHECK(tj_field(&info, 1, "execution_strategy") != 0);
+    tj_free(&info);
+    generator.destroy(generator.context);
+    CHECK(creates == 2 && destroys == 2);
+    expected_prefill = LUNELETTE_METAL_PREFILL_MPS;
+    arguments[12] = "mps";
+    CHECK(service_native_open(15, arguments, &generator, &port));
+    CHECK(strstr(generator.info, "FP8-convert-stage-then-MPS"));
+    CHECK(strstr(generator.info, "MPS accumulation unspecified"));
+    generator.destroy(generator.context);
+    fail_memory = 1;
+    CHECK(!service_native_open(15, arguments, &generator, &port));
+    CHECK(creates == 4 && destroys == 4); /* Getter failure closes runtime/tokenizer. */
+    fail_memory = 0;
+    wrong_strategy = 1;
+    CHECK(!service_native_open(15, arguments, &generator, &port));
+    CHECK(creates == 5 && destroys == 5); /* A valid but unrequested strategy is not fallback. */
     puts("native adapter CPU stub contract passed (not model validation)");
     return 0;
 }
