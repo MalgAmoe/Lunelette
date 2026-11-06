@@ -165,9 +165,31 @@ $(BUILD)/test_service_transport: tests/test_service_transport.c service/http.c $
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_transport.c $(SERVICE_SOURCES) -o $@ -pthread
 .PHONY: service-protocol-test service-test
 core-test: service-protocol-test
-service-protocol-test: $(BUILD)/test_service_session
+service-protocol-test: $(BUILD)/test_service_session $(BUILD)/test_service_pieces $(BUILD)/test_service_metrics
 	./$(BUILD)/test_service_session
+	./$(BUILD)/test_service_pieces
+	./$(BUILD)/test_service_metrics
 # Python is optional test/client tooling, not a native runtime dependency.
 service-test: service-protocol-test $(BUILD)/test_service_server $(BUILD)/test_service_transport
 	./$(BUILD)/test_service_transport
 	python3 tests/test_service_http.py ./$(BUILD)/test_service_server
+
+ifeq ($(shell uname -s),Darwin)
+$(BUILD)/lunelette-server: service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_NATIVE -DSERVICE_COMMIT='"$(SERVICE_COMMIT)"' -DSERVICE_DIRTY='"$(SERVICE_DIRTY)"' $(METAL_TARGET) $(LDFLAGS) service/http.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ -pthread $(LDLIBS) $(METAL_LIBS)
+endif
+
+$(BUILD)/test_service_framing: tests/test_service_framing.c service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) $(LDFLAGS) tests/test_service_framing.c service/framing.c $(TOKENIZER_SOURCES) -o $@ $(LDLIBS)
+
+$(BUILD)/test_service_pieces: tests/test_service_pieces.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_pieces.c $(SERVICE_SOURCES) -o $@ -pthread
+
+ifeq ($(shell uname -s),Darwin)
+# Optional CPU-only native adapter test: runtime symbols are explicit test stubs.
+$(BUILD)/test_service_native: tests/test_service_native.c service/native.c service/native.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_native.c service/native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ $(LDLIBS)
+endif
+
+$(BUILD)/test_service_metrics: tests/test_service_metrics.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_metrics.c src/tokenizer_json.c -o $@ -pthread

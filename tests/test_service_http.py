@@ -46,6 +46,52 @@ def runner_faults(directory):
                        (startup_output / "client.ndjson").read_text().splitlines()]
     check(any(r["kind"] == "failure" and r.get("phase") == "startup"
               for r in startup_records))
+    # Native limits must not inherit the fake byte-token budget.
+    native_scenario = Path(directory) / "native-long-message.json"
+    native_scenario.write_text(json.dumps({"version": 1, "mode": "free_greedy",
+        "operations": [{"op": "message", "content": "hello " * 100}]}))
+    check(load_scenario(native_scenario)["mode"] == "free_greedy")
+    # A caller error must be rejected before creating a resident process.
+    with patch.object(real_workload, "Service") as launch, patch.object(sys, "argv", [
+            "runner", "--server", "unused", "--scenario", str(native_scenario),
+            "--output", str(Path(directory) / "wrong-mode")]), contextlib.redirect_stderr(io.StringIO()):
+        check(real_workload.main() == 1)
+        check(not launch.called)
+    # Preserve an unterminated startup diagnostic on EOF.
+    child = Path(directory) / "native-startup-child"
+    child.write_text(f"#!{sys.executable}\nimport sys\nsys.stderr.write('unfinished diagnostic')\n")
+    child.chmod(0o700)
+    partial = Path(directory) / "unterminated-startup"
+    try:
+        Service(child, partial, native_args=[])
+    except RuntimeError:
+        pass
+    else:
+        raise RuntimeError("unterminated startup unexpectedly succeeded")
+    check("unfinished diagnostic" in (partial / "server.stderr").read_text())
+    # Drain native stderr during execution, rather than only after waiting for
+    # shutdown (a full pipe can otherwise block a worker indefinitely).
+    marker = Path(directory) / "stderr-written"
+    child.write_text(f"#!{sys.executable}\n" +
+        "import os, signal, time\n" +
+        "signal.signal(signal.SIGTERM, lambda *_: exit(0))\n" +
+        "os.write(2, b'{\"event\":\"listening\",\"port\":1234}\\n')\n" +
+        "data = b'x' * 1048576\n" +
+        "while data:\n    data = data[os.write(2, data):]\n" +
+        f"open({str(marker)!r}, 'w').write('done')\n" +
+        "while True: time.sleep(.01)\n")
+    with patch.object(Service, "request", side_effect=[
+            (200, {"model_loaded": True, "runtime_ready": True}),
+            (200, {"generator": "native_greedy", "numerical_validation": "diagnostic_known_reference_mismatches"})]):
+        service = Service(child, Path(directory) / "stderr-drain", native_args=[])
+    try:
+        deadline = time.monotonic() + 3
+        while not marker.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        check(marker.exists())
+    finally:
+        cleanup(service)
+    check((Path(directory) / "stderr-drain/server.stderr").stat().st_size > 1048576)
     scenario_path = Path(directory) / "fault.json"
     scenario = {"version": 1, "mode": "controlled_protocol_only",
                 "operations": [{"op": "generate", "id": "fault", "budget": 1}]}
@@ -205,7 +251,7 @@ def stream_faults():
             ([started, started, completed], False),
             ([started, completed, delta, completed], False),
             ([started, {**delta, "event": "unknown"}, completed], False),
-            ([started, {**delta, "text": "x" * 2048}, completed], False)]:
+            ([started, {**delta, "text": "x" * 8192}, completed], False)]:
         service = Service.__new__(Service)
         service.connect = lambda: Connection(events)
         service.record = lambda *args, **kwargs: None
@@ -290,6 +336,14 @@ def main():
             check(service.request("POST", "/sessions/1/generate", {"id":"bad-budget", "budget":True})[0] == 400)
             # Partial multi-byte continuation and duplicate replay after reset.
             first = service.generate(1, "first", 3)
+            status, retained = service.request("GET", "/requests/first")
+            check(status == 200 and first["metrics"] == retained["metrics"])
+            check(first["metrics"]["test_only"] is True)
+            check(first["metrics"]["process_phys_footprint_before_bytes"] is None)
+            samples = first["metrics"]["decode_step_duration_us"]
+            check(sum(samples) == first["metrics"]["decode_total_us"])
+            check(len(samples) == first["metrics"]["decode_steps"])
+            check(all(sample >= 0 for sample in samples))
             check(first["text"] == "A" and first["pending_tokens"] == 1)
             check(service.request("POST", "/sessions/1/messages", {"role":"user", "content":"x"})[0] == 409)
             second = service.generate(1, "second", 7)
@@ -298,6 +352,15 @@ def main():
             check(service.request("GET", "/info")[1]["fixture_text"] == first["text"] + second["text"])
             check(service.request("POST", "/sessions/1/reset", {})[0] == 200)
             check(service.request("POST", "/sessions/1/generate", {"id":"first", "budget":1})[0] == 409)
+            cancelled = service.generate(1, "timed-cancel", 100, cancel=True)
+            check(cancelled["event"] == "cancelled")
+            check(cancelled["cancel_ack_seconds"] >= 0)
+            check(cancelled["cancel_completion_seconds"] >= cancelled["cancel_ack_seconds"])
+            status, retained = service.request("GET", "/requests/timed-cancel")
+            check(status == 200 and retained["metrics"] == cancelled["metrics"])
+            check(retained["metrics"]["cancel_source"] == "explicit")
+            check(retained["metrics"]["cancel_latency_ms"] >= 0)
+            check(service.request("POST", "/sessions/1/reset", {})[0] == 200)
             # Blocked native tick must not block status/cancel/reset rejection.
             connection = service.connect()
             connection.request("POST", "/sessions/1/generate", json.dumps({"id":"busy", "budget":100}))

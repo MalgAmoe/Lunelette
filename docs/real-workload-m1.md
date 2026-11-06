@@ -1,7 +1,7 @@
 # M1: diagnostic protocol foundation (prototype v1)
 
 **Not a real-model service.** This implements only the model-free foundation of
-`real-workload-spec.md`. The production resident Metal adapter is deferred to M2.
+`real-workload-spec.md`. The production resident Metal adapter is separate; see `real-workload-m2.md` for its operational scope and numerical limitations.
 No model is loaded, no inference is run, no official tokenizer/template is claimed,
 and fixed replay is not task-success or numerical/performance evidence.
 
@@ -36,7 +36,7 @@ terminals or unsuccessful child shutdown make the runner exit nonzero and retain
 `protocol_success: false` plus raw diagnostics; no retry occurs. The stream must
 begin with one `started` event, use the admitted request ID throughout, and end
 with exactly one terminal event. Unknown, reordered and post-terminal events fail.
-Events are bounded to 1024 bytes and budget+2 records. A 15-second diagnostic
+Events are bounded to 8192 bytes and budget+2 records. A 15-second diagnostic
 request budget is checked at payload reads, alongside the four-second socket
 read timeout; these are test-generator limits, not real-model latency limits.
 Startup failures are retained in the client log, including executable-launch errors.
@@ -117,7 +117,7 @@ A 16-event ring never blocks the worker. Overflow cancels, discards queued delta
 if necessary to reserve terminal delivery, and marks needs_reset. This also applies
 when the last delta exactly fills the ring: dropping text must never result in a
 `completed` event. Do not treat
-text before a cancelled/error event as complete. Per-event storage is 1024 bytes;
+text before a cancelled/error event as complete. Per-event storage is 8192 bytes;
 retained results are capped at 4096 text bytes per admitted ID (the fixture's
 256-token context is tighter). Transport has one bounded output buffer per socket.
 Disconnect cancels active work; idle-output deadlines bound stalled sockets.

@@ -2,11 +2,13 @@
 #define LUNELETTE_SERVICE_SESSION_H
 #include <pthread.h>
 #include <stddef.h>
+#include <stdint.h>
 #include "tokenizer_json.h"
 #define SERVICE_IDS 256
 #define SERVICE_EVENTS 16
-#define SERVICE_EVENT_BYTES 1024
-/* Worker-only callbacks. next returns one raw synthetic byte token, or EOS=256.
+#define SERVICE_EVENT_BYTES 8192
+/* Runtime callbacks are worker-only. next returns an authoritative nonnegative ID,
+ * or a negative error. Without piece, IDs are raw synthetic bytes/EOS=256.
  * materialize must validate the entire committed prefix, not just its length. */
 typedef struct {
     void *context;
@@ -14,12 +16,24 @@ typedef struct {
     int (*materialize)(void *context, const unsigned *tokens, unsigned length);
     void (*reset)(void *context);
     void (*destroy)(void *context);
+    /* Optional native text-only policy. Immutable CPU callbacks; frame runs idle
+     * under the session lock, piece runs on the worker. EOS defaults to 256. */
+    int (*frame)(void *, const unsigned char *, size_t, int, unsigned *, unsigned *);
+    int (*piece)(void *, unsigned, unsigned char *, size_t *);
+    unsigned eos;
+    const char *info;
 } service_generator;
 typedef struct {
     char id[65];
     char status[16];
     char text[4097];
     unsigned generated, logical, committed, pending;
+    unsigned token_ids[256], prompt, reused, newly_processed;
+    double framing_ms, prefill_ms, decode_ms, first_token_ms, total_ms;
+    uint64_t decode_us[256], decode_total_us, prefill_us, memory_before, memory_after;
+    unsigned decode_steps, prefill_steps, session_id, before_logical, before_committed, before_pending;
+    double cancel_received_ms, cancel_latency_ms;
+    char before_state[16], cancel_source[16];
     char stop_reason[32], state[16];
 } service_request;
 typedef struct {
@@ -35,8 +49,13 @@ typedef struct {
     unsigned head, count;
     unsigned char utf8[4];
     unsigned utf8_length;
+    uint64_t startup_footprint;
+    double startup_sample_ms;
+    double framing_ms;
     int cancel, stop, job, reset_job;
 } service_session;
+/* Zero denotes unavailable internally; JSON exposes null, never a fake footprint. */
+uint64_t service_process_footprint(void);
 int service_init(service_session *s, service_generator generator);
 void service_destroy(service_session *s);
 /* Called by socket owner only. Reply always JSON, status is HTTP status.

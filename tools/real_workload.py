@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Version-1 controlled protocol runner. Standard library only; no model claims."""
+"""Version-1 diagnostic workload runner. Explicit native or model-free launch."""
 import argparse
 import http.client
 import json
@@ -9,6 +9,7 @@ import select
 import subprocess
 import sys
 import time
+import threading
 
 
 def strict_object(pairs):
@@ -24,8 +25,8 @@ def load_scenario(path):
     value = json.loads(Path(path).read_text(), object_pairs_hook=strict_object)
     if set(value) != {"version", "mode", "operations"} or type(value["version"]) is not int or value["version"] != 1:
         raise ValueError("expected version 1 scenario schema")
-    if value["mode"] != "controlled_protocol_only":
-        raise ValueError("free_greedy unsupported by diagnostic generator")
+    if value["mode"] not in {"controlled_protocol_only", "free_greedy"}:
+        raise ValueError("unsupported scenario mode")
     if not isinstance(value["operations"], list) or len(value["operations"]) > 256:
         raise ValueError("operations must be bounded list")
     fields = {"create": set(), "message": {"content"}, "generate": {"id", "budget"},
@@ -52,21 +53,26 @@ def load_scenario(path):
             raise ValueError("invalid budget")
         if "id" in op and (not isinstance(op["id"], str) or not 1 <= len(op["id"]) <= 64):
             raise ValueError("invalid id")
-        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > 256):
+        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > (4096 if value["mode"] == "free_greedy" else 256)):
             raise ValueError("invalid content")
     return value
 
 
 class Service:
     """Owns only the child it launches. Every request/arrival/failure is recorded."""
-    def __init__(self, executable, output, tick_ms=50):
+    def __init__(self, executable, output, tick_ms=50, native_args=None, request_seconds=120):
+        if type(request_seconds) not in (int, float) or not 1 <= request_seconds <= 120:
+            raise ValueError("request_seconds outside 1..120")
+        self.native = native_args is not None
+        self.request_seconds = request_seconds if self.native else 15
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.log = (self.output / "client.ndjson").open("x")
         self.stderr = (self.output / "server.stderr").open("x")
         try:
-            self.process = subprocess.Popen([str(Path(executable).resolve()), "--port", "0",
-                                             "--tick-ms", str(tick_ms)],
+            arguments = [str(Path(executable).resolve()), "--port", "0"]
+            arguments += native_args if self.native else ["--tick-ms", str(tick_ms)]
+            self.process = subprocess.Popen(arguments,
                                             stdout=self.stderr, stderr=subprocess.PIPE)
         except BaseException as error:
             self.record("failure", phase="startup", error=repr(error))
@@ -74,26 +80,56 @@ class Service:
             self.log.close()
             raise
         self.port = None
+        self.stderr_thread = None
+        self.stderr_error = None
+        self.stderr_stop = threading.Event()
+        line = bytearray()
         try:
-            deadline, line = time.monotonic() + 3, bytearray()
-            while not line.endswith(b"\n"):
+            deadline = time.monotonic() + (180 if self.native else 3)
+            startup_bytes = 0
+            while self.port is None:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0 or not select.select([self.process.stderr], [], [], remaining)[0]:
                     raise TimeoutError("no startup announcement")
                 chunk = os.read(self.process.stderr.fileno(), 1)
-                if not chunk or len(line) >= 4096:
-                    raise RuntimeError("invalid startup announcement")
+                if not chunk:
+                    raise RuntimeError("server exited before readiness; see server.stderr")
+                startup_bytes += 1
+                if len(line) >= 4096 or startup_bytes > 65536:
+                    raise RuntimeError("startup output exceeds bounds")
                 line.extend(chunk)
-            self.stderr.write(line.decode())
-            self.stderr.flush()
-            self.port = json.loads(line)["port"]
+                if chunk != b"\n":
+                    continue
+                complete_line = bytes(line)
+                line.clear()
+                self.stderr.write(complete_line.decode(errors="replace"))
+                self.stderr.flush()
+                try:
+                    announcement = json.loads(complete_line)
+                except ValueError:
+                    if not self.native:
+                        raise
+                else:
+                    if announcement.get("event") == "listening":
+                        self.port = announcement["port"]
+            if self.native:
+                self.stderr_thread = threading.Thread(target=self.drain_stderr, daemon=True)
+                self.stderr_thread.start()
             health = self.request("GET", "/health")[1]
             info = self.request("GET", "/info")[1]
-            if not health.get("operational_test_service") or health.get("model_loaded") is not False:
+            if self.native:
+                if not health.get("model_loaded") or not health.get("runtime_ready") or info.get("generator") != "native_greedy":
+                    raise RuntimeError("native runtime not ready")
+                if info.get("numerical_validation") != "diagnostic_known_reference_mismatches":
+                    raise RuntimeError("unexpected numerical status")
+            elif not health.get("operational_test_service") or health.get("model_loaded") is not False:
                 raise RuntimeError("unexpected readiness")
-            if info.get("generator") != "diagnostic_test_generator" or info.get("runtime_ready") is not False:
+            if not self.native and (info.get("generator") != "diagnostic_test_generator" or info.get("runtime_ready") is not False):
                 raise RuntimeError("not the diagnostic protocol service")
         except BaseException as error:
+            if line:
+                self.stderr.write(line.decode(errors="replace"))
+                self.stderr.flush()
             self.record("failure", phase="startup", error=repr(error))
             try:
                 self.close()
@@ -101,6 +137,30 @@ class Service:
                 # Preserve the cause of startup failure, not just cleanup's error.
                 print(f"real-workload: startup cleanup: {cleanup_error}", file=sys.stderr)
             raise
+
+    def drain_stderr(self):
+        # Only this thread writes the diagnostic file after native readiness.
+        # Draining while the child runs prevents a full stderr pipe from blocking
+        # the serialized model worker (and its cancellation boundary).
+        try:
+            trailing_bytes = 0
+            while True:
+                ready = select.select([self.process.stderr], [], [], .1)[0]
+                if not ready:
+                    if self.stderr_stop.is_set():
+                        return
+                    continue
+                chunk = os.read(self.process.stderr.fileno(), 4096)
+                if not chunk:
+                    return
+                self.stderr.write(chunk.decode(errors="replace"))
+                self.stderr.flush()
+                if self.stderr_stop.is_set():
+                    trailing_bytes += len(chunk)
+                    if trailing_bytes >= 65536:
+                        raise RuntimeError("diagnostic output exceeds post-shutdown drain bound")
+        except Exception as error:
+            self.stderr_error = repr(error)
 
     def record(self, kind, **values):
         self.log.write(json.dumps({"kind": kind, "monotonic": time.monotonic(), **values},
@@ -130,6 +190,8 @@ class Service:
 
     def generate(self, session, request_id, budget, cancel=False):
         connection = self.connect()
+        if getattr(self, "native", False):
+            connection.timeout = self.request_seconds
         path = f"/sessions/{session}/generate"
         body = json.dumps({"id": request_id, "budget": budget}).encode()
         sent = time.monotonic()
@@ -137,20 +199,28 @@ class Service:
         first_text = None
         events, text, raw_line = [], "", bytearray()
         terminal_seen = False
+        cancel_sent = cancel_ack_seconds = cancel_completion_seconds = None
         # Fixed test generator reaches EOS within ten one-second ticks. This
         # is a diagnostic transport deadline, not a real-model latency limit.
-        deadline = sent + 15.0
+        deadline = sent + getattr(self, "request_seconds", 15)
         try:
             connection.request("POST", path, body)
+            transport_socket = getattr(connection, "sock", None)
             response = connection.getresponse()
             if response.status != 200 or response.getheader("Content-Type") != "application/x-ndjson":
                 raise RuntimeError((response.status, response.read()))
             if cancel:
+                cancel_sent = time.monotonic()
                 status, ack = self.request("POST", f"/requests/{request_id}/cancel", {})
+                cancel_ack_seconds = time.monotonic() - cancel_sent
                 if status != 200 or not ack["cancel_requested"]:
                     raise RuntimeError("cancellation not acknowledged")
             # read1 observes actual available payload, not readline's newline wait.
             while True:
+                if transport_socket:
+                    remaining = max(0.001, deadline - time.monotonic())
+                    transport_socket.settimeout(remaining if getattr(self, "native", False)
+                                                else min(4.0, remaining))
                 chunk = response.read1(1024)
                 arrived = time.monotonic()
                 if arrived >= deadline:
@@ -160,7 +230,7 @@ class Service:
                 self.record("arrival", raw_hex=chunk.hex(), since_send=arrived - sent)
                 for byte in chunk:
                     raw_line.append(byte)
-                    if len(raw_line) > 1024:
+                    if len(raw_line) > 8192:
                         raise ValueError("stream event exceeds byte limit")
                     if byte != 10:
                         continue
@@ -180,6 +250,8 @@ class Service:
                         raise ValueError("stream text must be a string")
                     event["text"].encode("utf-8", errors="strict")
                     terminal_seen = kind in {"completed", "cancelled", "error"}
+                    if terminal_seen and cancel_sent is not None:
+                        cancel_completion_seconds = arrived - cancel_sent
                     events.append(event)
                     if kind == "text_delta":
                         if event["text"] and first_text is None:
@@ -188,7 +260,22 @@ class Service:
             if raw_line or not events or events[-1]["event"] not in {"completed", "cancelled", "error"}:
                 raise RuntimeError("missing complete terminal event")
             result = {**events[-1], "text": text, "first_actual_text_seconds": first_text,
-                      "completion_seconds": time.monotonic() - sent}
+                      "completion_seconds": time.monotonic() - sent,
+                      "cancel_ack_seconds": cancel_ack_seconds,
+                      "cancel_completion_seconds": cancel_completion_seconds}
+            if getattr(self, "native", False):
+                status, retained = self.request("GET", f"/requests/{request_id}")
+                if status != 200:
+                    raise RuntimeError("cannot inspect native request")
+                if result["event"] == "completed" and retained["text"] != text:
+                    raise ValueError("streamed/retained text mismatch")
+                if result.get("metrics") != retained.get("metrics"):
+                    raise ValueError("terminal/retained metrics mismatch")
+                result["request_metadata"] = retained
+                status, ledger = self.request("GET", f"/sessions/{session}")
+                if status != 200:
+                    raise RuntimeError("cannot inspect native ledger")
+                result["session_metadata"] = ledger
             self.record("stream_result", **result)
             return result
         except BaseException as error:
@@ -202,14 +289,25 @@ class Service:
         if self.process.poll() is None:
             self.process.terminate()
         try:
-            self.process.wait(timeout=3)
+            self.process.wait(timeout=120 if getattr(self, "native", False) else 3)
         except subprocess.TimeoutExpired:
             timed_out = True
             self.record("failure", error="owned child shutdown timed out; killing")
             self.process.kill()
             self.process.wait(timeout=3)
+        reader = getattr(self, "stderr_thread", None)
+        if reader:
+            self.stderr_stop.set()
+            reader.join(timeout=3)
+            if reader.is_alive():
+                self.record("failure", error="native diagnostic reader did not finish")
+                return False
+            if self.stderr_error:
+                self.record("failure", error=self.stderr_error)
+                timed_out = True
         if self.process.stderr:
-            self.stderr.write(self.process.stderr.read().decode(errors="replace"))
+            if not reader:
+                self.stderr.write(self.process.stderr.read().decode(errors="replace"))
             self.process.stderr.close()
         self.record("shutdown", returncode=self.process.returncode)
         if self.process.returncode != 0:
@@ -220,6 +318,8 @@ class Service:
 
 
 def run(service, scenario):
+    if (scenario["mode"] == "free_greedy") != getattr(service, "native", False):
+        raise ValueError("scenario mode must match explicit native/test launch")
     session = None
     start = time.monotonic()
     for op in scenario["operations"]:
@@ -251,7 +351,7 @@ def run(service, scenario):
         for key, expected in op.get("expect", {}).items():
             if result.get(key) != expected:
                 raise ValueError(f"{action}: {key}: expected {expected!r}, got {result.get(key)!r}")
-    return {"protocol_success": True, "task_success": None, "mode": "controlled_protocol_only",
+    return {"protocol_success": True, "task_success": None, "mode": scenario["mode"],
             "duration_seconds": time.monotonic() - start, "performance_evidence": False}
 
 
@@ -260,10 +360,27 @@ def main():
     parser.add_argument("--server", required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--output", required=True, help="new directory, never overwritten")
+    parser.add_argument("--native-model")
+    parser.add_argument("--native-tokenizer")
+    parser.add_argument("--native-prefill", choices=["mps", "custom"], default="mps")
+    parser.add_argument("--request-seconds", type=float, default=120)
     args = parser.parse_args()
     try:
         scenario = load_scenario(args.scenario)
-        service = Service(args.server, args.output)
+        native_args = None
+        if args.native_model or args.native_tokenizer:
+            if not args.native_model or not args.native_tokenizer:
+                raise ValueError("native model and tokenizer both required")
+            native_args = ["--model", args.native_model, "--tokenizer", args.native_tokenizer,
+                           "--strategy", "resident-fp32", "--context", "256", "--prefill-chunk", "256",
+                           "--prefill", args.native_prefill]
+        if (scenario["mode"] == "free_greedy") != (native_args is not None):
+            raise ValueError("scenario mode must match explicit native/test launch")
+        if native_args is None:
+            service = Service(args.server, args.output)
+        else:
+            service = Service(args.server, args.output, native_args=native_args,
+                              request_seconds=args.request_seconds)
     except Exception as error:
         print(f"real-workload: {error}", file=sys.stderr)
         return 1

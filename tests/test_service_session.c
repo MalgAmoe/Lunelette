@@ -84,6 +84,12 @@ static void drain(char *text, const char *terminal)
     }
     CHECK(0);
 }
+static void *shutdown_service(void *unused)
+{
+    (void)unused;
+    service_destroy(&session);
+    return NULL;
+}
 int main(void)
 {
     tj_document d;
@@ -108,7 +114,7 @@ int main(void)
     fake f = {0};
     CHECK(!pthread_mutex_init(&f.lock, NULL));
     CHECK(!pthread_cond_init(&f.wake, NULL));
-    service_generator generator = {&f, next, commit, reset, destroy};
+    service_generator generator = {&f, next, commit, reset, destroy, NULL, NULL, 0, NULL};
     CHECK(service_init(&session, generator));
     CHECK(route("POST", "/sessions", "{}") == 200);
     CHECK(route("POST", "/sessions/1/messages", "{\"role\":\"assistant\",\"content\":\"x\"}") == 400);
@@ -174,12 +180,28 @@ int main(void)
     CHECK(strstr(reply, "\"cancel_requested\":false"));
     CHECK(route("POST", "/requests/blocked/cancel", "{}") == 200);
     CHECK(strstr(reply, "\"cancel_requested\":true"));
+    CHECK(strstr(reply, "\"cancel_latency_ms\":null")); /* Not stopped yet. */
+    pthread_mutex_lock(&session.lock);
+    double received = session.history[session.active].cancel_received_ms;
+    CHECK(received > 0);
+    pthread_mutex_unlock(&session.lock);
+    CHECK(route("POST", "/requests/blocked/cancel", "{}") == 200);
+    pthread_mutex_lock(&session.lock);
+    CHECK(session.history[session.active].cancel_received_ms == received);
+    pthread_mutex_unlock(&session.lock);
     pthread_mutex_lock(&f.lock);
     CHECK(f.entered && !f.released);
     f.released = 1;
     pthread_cond_broadcast(&f.wake);
     pthread_mutex_unlock(&f.lock);
     drain(part, "\"event\":\"cancelled\"");
+    pthread_mutex_lock(&session.lock);
+    service_request *cancelled = &session.history[session.active];
+    CHECK(cancelled->generated == 3 && cancelled->decode_steps == 3);
+    CHECK(cancelled->cancel_latency_ms >= 0);
+    CHECK(!strcmp(cancelled->cancel_source, "explicit"));
+    CHECK(cancelled->memory_before == 0 && cancelled->memory_after == 0);
+    pthread_mutex_unlock(&session.lock);
     CHECK(route("POST", "/sessions/1/reset", "{}") == 200);
     CHECK(route("GET", "/requests/blocked", "") == 200);
     CHECK(strstr(reply, "\"state\":\"needs_reset\""));
@@ -188,6 +210,9 @@ int main(void)
     f.invalid = 1;
     CHECK(route("POST", "/sessions/1/generate", "{\"id\":\"bad\",\"budget\":1}") == 200);
     drain(part, "\"event\":\"error\"");
+    CHECK(route("GET", "/requests/blocked", "") == 200);
+    CHECK(strstr(reply, "\"cancel_requested\":true")); /* History survives newer work. */
+    CHECK(!strstr(reply, "\"cancel_latency_ms\":null"));
     CHECK(route("GET", "/sessions/1", "") == 200);
     CHECK(strstr(reply, "needs_reset"));
     f.invalid = 0;
@@ -207,6 +232,8 @@ int main(void)
         nanosleep(&delay, NULL);
     }
     CHECK(done);
+    CHECK(!strcmp(session.history[session.active].cancel_source, "overflow"));
+    CHECK(session.history[session.active].cancel_latency_ms >= 0);
     drain(part, "\"event\":\"cancelled\"");
     CHECK(route("GET", "/sessions/1", "") == 200);
     CHECK(strstr(reply, "needs_reset"));
@@ -287,6 +314,54 @@ int main(void)
     CHECK(strstr(reply, "\"recovery\":\"restart_service\""));
     service_destroy(&session);
     CHECK(f.destroys == 1);
+    /* Receipt during a blocked callback: disconnect and shutdown share the same
+     * safe-boundary accounting, including work whose sampled ID is discarded. */
+    for (unsigned shutdown = 0; shutdown < 2; shutdown++) {
+        CHECK(service_init(&session, generator));
+        CHECK(route("POST", "/sessions", "{}") == 200);
+        f.position = 3;
+        f.block_at = 3;
+        f.entered = f.released = 0;
+        CHECK(route("POST", "/sessions/1/generate", "{\"id\":\"stop\",\"budget\":1}") == 200);
+        pthread_mutex_lock(&f.lock);
+        while (!f.entered) {
+            pthread_cond_wait(&f.wake, &f.lock);
+        }
+        pthread_mutex_unlock(&f.lock);
+        pthread_t thread;
+        if (shutdown) {
+            CHECK(!pthread_create(&thread, NULL, shutdown_service, NULL));
+            for (;;) {
+                pthread_mutex_lock(&session.lock);
+                int received_stop = session.stop;
+                pthread_mutex_unlock(&session.lock);
+                if (received_stop) {
+                    break;
+                }
+                nanosleep(&delay, NULL);
+            }
+        } else {
+            service_disconnect(&session);
+        }
+        pthread_mutex_lock(&f.lock);
+        f.released = 1;
+        pthread_cond_broadcast(&f.wake);
+        pthread_mutex_unlock(&f.lock);
+        if (shutdown) {
+            CHECK(!pthread_join(thread, NULL));
+        } else {
+            drain(part, "\"event\":\"cancelled\"");
+        }
+        service_request *stopped = &session.history[0];
+        CHECK(stopped->cancel_received_ms > 0 && stopped->cancel_latency_ms >= 0);
+        CHECK(!strcmp(stopped->cancel_source, shutdown ? "shutdown" : "disconnect"));
+        CHECK(stopped->generated == 0 && stopped->prefill_steps == 1);
+        CHECK(stopped->first_token_ms >= 0);
+        CHECK(!strcmp(stopped->state, "needs_reset"));
+        if (!shutdown) {
+            service_destroy(&session);
+        }
+    }
     CHECK(!pthread_cond_destroy(&f.wake));
     CHECK(!pthread_mutex_destroy(&f.lock));
     puts("service session/parser/UTF-8/identity tests passed");

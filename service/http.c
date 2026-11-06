@@ -1,5 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "session.h"
+#ifdef SERVICE_NATIVE
+#include "native.h"
+#endif
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -21,7 +24,7 @@ typedef struct {
     int fd, streaming, closing, parsed;
     size_t received, header, body, sent, output_length;
     double deadline;
-    char input[INPUT_LIMIT + 1], output[8192];
+    char input[INPUT_LIMIT + 1], output[65536];
 } connection;
 static volatile sig_atomic_t stopping;
 static void signal_stop(int number)
@@ -151,6 +154,7 @@ static int headers(connection *c, char *method, char *path)
 
 /* Test generator: fixed raw pieces split every byte of A€😀Z, then EOS.
  * materialized prefix is checked byte-for-byte on every append. */
+#ifndef SERVICE_NATIVE
 typedef struct {
     unsigned prefix[256], length, position, delay_ms, emitted;
     int has_pending;
@@ -206,9 +210,18 @@ static void fixture_destroy(void *context)
 {
     (void)context;
 }
+#endif
 int main(int argc, char **argv)
 {
-    unsigned port = 0, delay = 10;
+    unsigned port = 0;
+#ifdef SERVICE_NATIVE
+    service_generator generator = {0};
+    if (!service_native_open(argc, argv, &generator, &port)) {
+        fprintf(stderr, "native service requires explicit --model --tokenizer --strategy resident-fp32 --context 256 --prefill-chunk 256 --prefill mps|custom --port N; startup failed\n");
+        return 2;
+    }
+#else
+    unsigned delay = 10;
     int port_seen = 0;
     for (int i = 1; i < argc; i += 2) {
         char *end;
@@ -233,6 +246,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "test executable requires --port (0 selects ephemeral loopback port)\n");
         return 2;
     }
+#endif
     struct sigaction action = {0};
     action.sa_handler = signal_stop;
     sigemptyset(&action.sa_mask);
@@ -250,24 +264,35 @@ int main(int argc, char **argv)
         if (listener >= 0) {
             close(listener);
         }
+#ifdef SERVICE_NATIVE
+        generator.destroy(generator.context);
+#endif
         return 1;
     }
     socklen_t address_length = sizeof(address);
     if (getsockname(listener, (struct sockaddr *)&address, &address_length)) {
         close(listener);
+#ifdef SERVICE_NATIVE
+        generator.destroy(generator.context);
+#endif
         return 1;
     }
+#ifndef SERVICE_NATIVE
     fixture_generator fixture = {.delay_ms = delay};
     service_generator generator = {&fixture, fixture_next, fixture_materialize,
-                                   fixture_reset, fixture_destroy};
+                                   fixture_reset, fixture_destroy, NULL, NULL, 0, NULL};
+#endif
     service_session *session = calloc(1, sizeof(*session));
     if (!session || !service_init(session, generator)) {
+        if (generator.info) {
+            generator.destroy(generator.context);
+        }
         free(session);
         close(listener);
         return 1;
     }
-    fprintf(stderr, "{\"event\":\"listening\",\"port\":%u,\"model_loaded\":false}\n",
-            ntohs(address.sin_port));
+    fprintf(stderr, "{\"event\":\"listening\",\"port\":%u,\"model_loaded\":%s}\n",
+            ntohs(address.sin_port), generator.info ? "true" : "false");
     fflush(stderr);
     connection clients[CLIENTS] = {0};
     for (unsigned i = 0; i < CLIENTS; i++) {
@@ -345,7 +370,7 @@ int main(int argc, char **argv)
                         if (c->received != c->header + c->body) {
                             bad_request(session, c);
                         } else {
-                            char reply[4096];
+                            char reply[64000];
                             int stream;
                             /* A completed stream must finish transport delivery before
                              * another generation can consume the shared event ring. */
@@ -359,6 +384,9 @@ int main(int argc, char **argv)
                                     c->input + c->header, c->body, reply, sizeof(reply), &stream);
                             }
                             response(c, status, reply, stream);
+                            if (stream && session->generator.info) {
+                                c->deadline = now() + 120.0;
+                            }
                             if (stream) {
                                 stream_owner = (int)i;
                             }
@@ -370,7 +398,7 @@ int main(int argc, char **argv)
                 ssize_t n = send(c->fd, c->output + c->sent, c->output_length - c->sent, 0);
                 if (n > 0) {
                     c->sent += (size_t)n;
-                    c->deadline = now() + 2.0;
+                    c->deadline = now() + (c->streaming && session->generator.info ? 120.0 : 2.0);
                 } else if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
                     dead = 1;
                 }

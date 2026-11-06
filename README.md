@@ -146,10 +146,17 @@ Native FP8/W8A8 execution and resident-memory optimizations are out of scope.
 The [builder specification](docs/real-workload-spec.md) defines the next phase;
 it is a target, not a list of completed features. The
 [delivery plan](docs/real-workload-plan.md) and
-[M1 protocol guide](docs/real-workload-m1.md) describe the current foundation.
+[M1 protocol guide](docs/real-workload-m1.md) describe the model-free foundation.
+The [M2 service guide](docs/real-workload-m2.md) covers real resident execution.
 
 M1 provides a native loopback **test service with a deterministic generator**,
 model-free state/transport tests, and a standard-library Python scenario client.
-It does not load weights or perform inference. Real resident-model integration,
-authoritative conversation framing and numerical/session gates remain later work.
+It does not load weights or perform inference.
+
+M2 adds `build/lunelette-server`: a native loopback resident-FP32 service with
+pinned text-only multi-turn framing, authoritative token continuation, UTF-8
+streaming, cancellation and request measurements. Context remains 256 tokens.
+Both MPS and custom-prefill short-session checks passed; numerical status remains
+**diagnostic**, with independent discrepancies unresolved. Tools, prefix
+checkpoints, compact execution and longer context remain later work.
 Protocol-test success is not model task success or performance evidence.
