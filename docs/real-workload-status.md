@@ -3,9 +3,16 @@
 This is a coverage audit of the [builder specification](real-workload-spec.md),
 not a declaration that every requirement is complete. The persistent service,
 long-context ingestion, prefix controls and bounded native tool profiles operate in
-checks. **The full workload specification and independent numerical acceptance
-remain incomplete.** Historical evidence belongs to its recorded source/build,
-not automatically to every later binary.
+checks, and the operational definition of done has bounded demonstrations.
+**Final specification acceptance has not been agreed; independent numerical
+acceptance remains FAIL/open.** Historical evidence belongs to its recorded
+source/build, not automatically to every later binary.
+
+For acceptance decisions rather than another campaign, see the
+[spec closeout checklist](spec-closeout-checklist.md) and
+[evidence-only numerical review](numerical-closeout-review.md). The checklist
+distinguishes operational delivery from validated-baseline status, and narrow
+coverage from new requirements that the original spec does not impose.
 
 ## Requirement map
 
@@ -21,7 +28,7 @@ not automatically to every later binary.
 | §11 measurements | Server metrics, client timing, task/check results, bounded tool durations, work counts, source/model identity, named allocations and sampled footprint. [M5](real-workload-m5.md), [M6](real-workload-m6.md) | Samples are not peaks; no energy/general performance acceptance. Legacy captures retain their original metric definitions. Faster failing/truncated tasks are not faster successful work. |
 | §12 reusable scenarios | Versioned lifecycle/generation/cancel/pause scenarios, bounded native tool loops, exact-answer score steps; independent matched-work replay tooling. | Version2 adds bounded repetitions, explicit reuse and checkpoint recipes under one model load. [Native controlled replay](controlled-replay.md) adds explicit fixed trajectories and full-vector captures/comparison, bounded to16 selections per process; forced outputs never score task success. One real ON/OFF pair matched all eight captured vectors per policy; no broad benchmark claim. `controlled_protocol_only` is scripted protocol testing, not numerical replay or task quality. |
 | §13 gates | Model-free protocol tests; bounded native numerical/state contracts; distinct task scores and failures. [M3](real-workload-m3.md), [M5](real-workload-m5.md), [M6](real-workload-m6.md) | Strict independent-reference mismatches remain unresolved. Native self-consistency is not independent correctness. Operational service ≠ validated numerical baseline. |
-| §14 delivery/report | Service can load once, execute multiple requests or native tool continuations, collect evidence and reset while retaining weights. | Specified execution-strategy candidates and systematic quality comparisons remain incomplete. Real M7 tool runs used compact/MPS/legacy only; no tool-loop cross-strategy performance or numerical campaign is claimed. |
+| §14 delivery/report | Service can load once, execute multiple requests or native tool continuations, collect evidence and reset while retaining weights. | Follow-up optimization candidates remain unimplemented; broader quality and tool-loop strategy comparisons are unmeasured, not automatically new initial gates. Real M7 tool runs used compact/MPS/legacy only. Final acceptance must state supported scope and numerical limitations. |
 
 ## Five initial workload families
 
@@ -84,7 +91,7 @@ Client/server exited zero; no retries or prompt changes. This is one synthetic
 recorded-reading scenario, not an observation tool, general summary-quality claim,
 representative intermittent benchmark or cross-strategy performance comparison.
 
-## Remaining work: do not silently waive requirements
+## Remaining scope and acceptance decisions
 
 The saved-observation lookup profile implements the third deterministic tool-data
 category through existing machinery; the earlier user-input scenario is not its
@@ -93,9 +100,10 @@ substitute. No live sensor subsystem was added.
 1. Version2 controls now have a [bounded scored document/history comparison](useful-workload-panel.md)
    across compact arithmetic/lookup and chunks128/256, plus a separately authorized
    resident follow-up at both chunks. All six bounded configurations have successful
-   results; the original resident refusal remains preserved. Broad response-length,
-   reliability and representative strategy coverage remain open. Do not retry
-   automatically, resurrect the suspended broad campaign or treat replay as quality.
+   results; the original resident refusal remains preserved. Agree any additional
+   summary/longer-response example explicitly; broad reliability studies and sweeps
+   are not mandatory initial gates. Do not retry automatically, resurrect the
+   suspended broad campaign or treat replay as quality.
 2. Evaluate execution candidates without conflating numerical consistency with
    speed or successful-task throughput. Lookup scalar execution is now maintained;
    tiles/fusion remain distinct follow-up candidates. Historical experiments do
