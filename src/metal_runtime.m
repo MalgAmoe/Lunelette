@@ -33,6 +33,7 @@ struct lunelette_metal_checkpoint {
 {
     self = [super init];
     if (self) {
+        limits = (lunelette_metal_limits){256, 256};
         uint64_t previous = atomic_load(&last_identity);
         while (previous != UINT64_MAX) {
             if (atomic_compare_exchange_weak(&last_identity, &previous, previous + 1)) {
@@ -152,22 +153,21 @@ int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, si
     return 0;
 }
 
-static int allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capacity)
+int lunelette_metal_allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capacity)
 {
-    const size_t widths[METAL_BUFFER_COUNT] = {
-        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_QUERY,
-        LUNELETTE_MODEL_KV, LUNELETTE_MODEL_KV, LUNELETTE_MODEL_QUERY,
-        LUNELETTE_MODEL_KV, LUNELETTE_MODEL_QUERY, LUNELETTE_MODEL_HIDDEN,
-        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_INNER,
-        LUNELETTE_MODEL_INNER, LUNELETTE_MODEL_INNER, LUNELETTE_MODEL_INNER,
-        LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN, LUNELETTE_MODEL_HIDDEN,
-        0, LUNELETTE_MODEL_HEAD_DIM, LUNELETTE_MODEL_HEAD_DIM, 1,
-        LUNELETTE_MODEL_QUERY_HEADS * LUNELETTE_CONTEXT_LIMIT
-    };
+    metal_allocation_plan plan;
+    _Static_assert(METAL_BUFFER_COUNT == METAL_PLAN_SLOTS && METAL_LOGITS == 18 &&
+        METAL_SCORE == 22, "planner slot ABI");
+    if (metal_plan_create(owner->limits, &plan)) {
+        snprintf(error, capacity, "Metal invalid allocation profile");
+        return -1;
+    }
+    if (metal_plan_fits(&plan, owner->device.maxBufferLength)) {
+        snprintf(error, capacity, "Metal scratch/KV exceeds device maxBufferLength");
+        return -1;
+    }
     for (size_t i = 0; i < METAL_BUFFER_COUNT; i++) {
-        size_t elements = i == METAL_LOGITS ? LUNELETTE_MODEL_VOCAB :
-            LUNELETTE_CONTEXT_LIMIT * widths[i];
-        owner->buffers[i] = [owner->device newBufferWithLength:elements * sizeof(float)
+        owner->buffers[i] = [owner->device newBufferWithLength:plan.scratch[i]
             options:MTLResourceStorageModeShared];
         if (!owner->buffers[i]) {
             snprintf(error, capacity, "Metal scratch allocation failed at slot %zu", i);
@@ -175,7 +175,7 @@ static int allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capa
         }
     }
     for (size_t i = 0; i < LUNELETTE_MODEL_LAYERS; i++) {
-        size_t bytes = LUNELETTE_CONTEXT_LIMIT * LUNELETTE_MODEL_KV * sizeof(float);
+        size_t bytes = plan.kv_each;
         owner->keys[i] = [owner->device newBufferWithLength:bytes
             options:MTLResourceStorageModeShared];
         owner->values[i] = [owner->device newBufferWithLength:bytes
@@ -197,10 +197,23 @@ lunelette_metal *lunelette_metal_create(const char *path,
 lunelette_metal *lunelette_metal_create_with_options(const char *path,
     const lunelette_metal_options *options, char *error, size_t capacity)
 {
+    return lunelette_metal_create_configured(path, options, NULL, error, capacity);
+}
+
+lunelette_metal *lunelette_metal_create_configured(const char *path,
+    const lunelette_metal_options *options, const lunelette_metal_limits *limits,
+    char *error, size_t capacity)
+{
     char fallback[512];
     if (!error || !capacity) {
         error = fallback;
         capacity = sizeof fallback;
+    }
+    lunelette_metal_limits resolved = limits ? *limits : (lunelette_metal_limits){256, 256};
+    metal_allocation_plan plan;
+    if (metal_plan_create(resolved, &plan)) {
+        snprintf(error, capacity, "Metal unsupported context/block profile");
+        return NULL;
     }
     lunelette_metal_prefill_mode mode = options ? options->prefill : LUNELETTE_METAL_PREFILL_MPS;
     if (mode != LUNELETTE_METAL_PREFILL_MPS && mode != LUNELETTE_METAL_PREFILL_CUSTOM) {
@@ -226,18 +239,41 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
             return NULL;
         }
         owner->prefill_mode = mode;
+        owner->limits = resolved;
         owner->device = MTLCreateSystemDefaultDevice();
         if (!owner->device || ![owner->device supportsFamily:MTLGPUFamilyApple7]) {
             snprintf(error, capacity, "Metal requires a supported Apple Silicon GPU (Apple7+)");
             goto cleanup;
         }
-        if (lunelette_metal_weights_account(&staged, strategy, &owner->memory)) {
+        if (lunelette_metal_weights_account_configured(&staged, strategy, resolved, &owner->memory)) {
             snprintf(error, capacity, "Metal strategy allocation size preflight failed");
             goto cleanup;
         }
+        /* Reject every requested length before the first Metal buffer allocation. */
+        uint64_t maximum = owner->device.maxBufferLength;
+        if (metal_plan_fits(&plan, maximum) ||
+            owner->memory.conversion_stage_bytes > maximum) {
+            snprintf(error, capacity, "Metal allocation exceeds device maxBufferLength");
+            goto cleanup;
+        }
+        for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
+            bool compact = strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+                staged.weights[i].tensor->dtype == ST_F8_E4M3;
+            size_t bytes;
+            if (metal_plan_buffer_fits(staged.weights[i].elements,
+                    compact ? 1 : sizeof(float), maximum, &bytes)) {
+                snprintf(error, capacity, "Metal weight exceeds device maxBufferLength: %s",
+                    staged.weights[i].tensor->name);
+                goto cleanup;
+            }
+        }
         /* Stage is explicitly charged in the base, not hidden in guard overhead. */
-        if (memory_guard(owner->memory.weight_bytes + owner->memory.conversion_stage_bytes,
-                error, capacity) != 0 ||
+        uint64_t guard_base;
+        if (metal_plan_guard_base(&plan, &owner->memory, &guard_base)) {
+            snprintf(error, capacity, "Metal memory guard estimate overflow");
+            goto cleanup;
+        }
+        if (memory_guard(guard_base, error, capacity) != 0 ||
             lunelette_metal_create_pipelines(owner, error, capacity) != 0) {
             goto cleanup;
         }
@@ -274,7 +310,7 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
                 goto cleanup;
             }
         }
-        if (allocate_buffers(owner, error, capacity) != 0) {
+        if (lunelette_metal_allocate_buffers(owner, error, capacity) != 0) {
             goto cleanup;
         }
         context = calloc(1, sizeof *context);
@@ -329,10 +365,12 @@ static int execute(lunelette_metal *context, const int64_t *ids, size_t count,
         *logits = NULL;
     }
     LuneletteMetalOwner *owner = get_owner(context);
-    if (!owner || !logits || !ids || !count || count > LUNELETTE_CONTEXT_LIMIT ||
-        !owner->valid || owner->length > LUNELETTE_CONTEXT_LIMIT - count ||
+    if (!owner || !logits || !ids || !count ||
+        count > owner->limits.block || count > owner->limits.context ||
+        !owner->valid || owner->length > owner->limits.context - count ||
         (prefill ? owner->length != 0 : owner->length == 0)) {
-        snprintf(error, capacity, "Metal sequence rejected: require reset/valid IDs and capacity <=256");
+        snprintf(error, capacity, "Metal sequence rejected: require reset/valid IDs and "
+            "configured block/context capacity");
         return -1;
     }
     for (size_t i = 0; i < count; i++) {
@@ -469,7 +507,7 @@ int lunelette_metal_checkpoint_create(lunelette_metal *context,
     LuneletteMetalOwner *owner = get_owner(context);
     if (!owner || !checkpoint || !owner->identity || !owner->valid ||
         !owner->endpoint_logits_valid || !owner->length ||
-        owner->length > LUNELETTE_CONTEXT_LIMIT || owner->checkpoint_epoch == UINT64_MAX ||
+        owner->length > owner->limits.context || owner->checkpoint_epoch == UINT64_MAX ||
         owner->buffers[METAL_LOGITS].length < LUNELETTE_MODEL_VOCAB * sizeof(float)) {
         if (error && capacity) {
             snprintf(error, capacity, "Metal checkpoint requires valid endpoint/available epoch");
@@ -516,7 +554,9 @@ int lunelette_metal_checkpoint_restore(lunelette_metal *context,
     LuneletteMetalOwner *owner = get_owner(context);
     if (!owner || !logits || !checkpoint || owner->active_checkpoint != checkpoint ||
         checkpoint->identity != owner->identity || checkpoint->epoch != owner->checkpoint_epoch ||
-        !owner->valid || !checkpoint->length || checkpoint->length > owner->length ||
+        !owner->valid || owner->length > owner->limits.context ||
+        !checkpoint->length || checkpoint->length > owner->limits.context ||
+        checkpoint->length > owner->length ||
         owner->buffers[METAL_LOGITS].length < sizeof checkpoint->logits) {
         if (error && capacity) {
             snprintf(error, capacity, "Metal checkpoint stale, invalid or wrong context");
@@ -539,4 +579,14 @@ void lunelette_metal_checkpoint_destroy(lunelette_metal_checkpoint *checkpoint)
         }
         free(checkpoint);
     }
+}
+
+int lunelette_metal_get_limits(const lunelette_metal *context, lunelette_metal_limits *limits)
+{
+    if (!context || !context->owner || !limits) {
+        return -1;
+    }
+    LuneletteMetalOwner *owner = (__bridge LuneletteMetalOwner *)context->owner;
+    *limits = owner->limits;
+    return 0;
 }

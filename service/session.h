@@ -5,23 +5,30 @@
 #include <stdint.h>
 #include "tokenizer_json.h"
 #define SERVICE_IDS 256
+#define SERVICE_CONTEXT_MAX 4352
 #define SERVICE_EVENTS 16
 #define SERVICE_EVENT_BYTES 8192
 #define SERVICE_METRIC_BYTES 7200
 /* Runtime callbacks are worker-only. next returns an authoritative nonnegative ID,
  * or a negative error. Without piece, IDs are raw synthetic bytes/EOS=256.
  * materialize must validate the entire committed prefix, not just its length. */
-/* Receipts count actual calls/commits, not plans. pending_* is a subset of
- * executed full/suffix work, or the single scalar decode token; do not add it
- * again to full/suffix totals. Total model tokens are full + suffix + decode
- * (each with attempted/committed variants). A logit restore is an actual runtime copy, not
- * a model decode or a sample. Missing work callback denotes diagnostic legacy
- * instrumentation only. */
+/* Work v2: full_* names retain source compatibility but mean API prefill;
+ * suffix_* mean API append, including rebuild chunks. The three disjoint API
+ * categories prefill/append/decode alone sum model tokens. Recompute and pending
+ * are subsets (recompute repeats a previously committed prefix after reset).
+ * Receipts count actual calls and commits, including failed work. */
 typedef struct {
     unsigned reused, full_attempted, full_committed, suffix_attempted, suffix_committed;
     unsigned pending_attempted, pending_committed, prefill_calls, append_calls, decode_calls;
     unsigned decode_attempted, decode_committed, logit_restores;
+    unsigned recompute_attempted, recompute_committed;
 } service_work;
+
+enum {
+    SERVICE_MATERIALIZE_ERROR = 0,
+    SERVICE_MATERIALIZE_READY = 1,
+    SERVICE_MATERIALIZE_MORE = 2
+};
 
 typedef struct {
     void *context;
@@ -46,6 +53,10 @@ typedef struct {
     int (*restore)(void *);
     void (*invalidate)(void *);
     void (*work)(void *, service_work *);
+    unsigned context_capacity, block_capacity;
+    /* One completed runtime block only: 0 ERROR, 1 READY, 2 MORE.
+     * cursor is the actual committed prefix, including on failure. */
+    int (*materialize_step)(void *, const unsigned *, unsigned, unsigned *);
 } service_generator;
 typedef struct {
     char operation[16];
@@ -72,7 +83,7 @@ typedef struct {
     pthread_cond_t wake;
     pthread_t worker;
     service_generator generator;
-    unsigned session, logical, committed, pending, tokens[256], budget;
+    unsigned session, logical, committed, pending, tokens[SERVICE_CONTEXT_MAX], budget;
     unsigned requests, active;
     char state[16];
     service_request history[SERVICE_IDS];
@@ -84,7 +95,7 @@ typedef struct {
     double startup_sample_ms;
     double framing_ms;
     int cancel, stop, job, reset_job;
-    unsigned checkpoint_tokens[256], checkpoint_length;
+    unsigned checkpoint_tokens[SERVICE_CONTEXT_MAX], checkpoint_length;
     char checkpoint_phase[16];
     uint64_t checkpoint_serial, checkpoint_id;
 } service_session;

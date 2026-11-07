@@ -93,7 +93,7 @@ def exercise(executable, tokenizer, policy, directory):
         check(restored["cache_restored"] == (policy == "on"))
         work = restored["metrics"]["work"]
         check(work["logit_restores"] == (1 if policy == "on" else 0))
-        check(all(work[name] == 0 for name in ("full_committed", "suffix_committed",
+        check(all(work[name] == 0 for name in ("prefill_committed", "append_committed",
                   "decode_committed", "prefill_calls", "append_calls", "decode_calls")))
         # A post-completion cancel cannot undo the published restore.
         check(not request("POST", "/requests/restore/cancel", {})["cancel_requested"])
@@ -102,12 +102,12 @@ def exercise(executable, tokenizer, policy, directory):
         check(state["committed_tokens"] == (logical if policy == "on" else 0))
         continued = generate("continued")
         work = continued["metrics"]["work"]
-        check(work["full_committed"] == (logical if policy == "off" else 0), continued)
+        check(work["prefill_committed"] == (logical if policy == "off" else 0), continued)
         check(work["prefill_calls"] == (1 if policy == "off" else 0))
         boundary = generate("boundary")
         check(boundary["metrics"]["work"]["prefill_calls"] == (1 if policy == "off" else 0))
         if policy == "off":
-            check(boundary["metrics"]["work"]["full_committed"] == logical + 1)
+            check(boundary["metrics"]["work"]["prefill_committed"] == logical + 1)
         cancelled = control("restore", "cancel-restore", checkpoint, cancel=True)
         check(cancelled["state"] == "needs_reset")
         check(cancelled["metrics"]["cancel_source"] == "explicit")

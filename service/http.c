@@ -19,13 +19,14 @@
 #define CLIENTS 16
 #define HEADER_LIMIT 4096
 #define BODY_LIMIT 8192
-#define INPUT_LIMIT (HEADER_LIMIT + BODY_LIMIT)
 typedef struct {
     int fd, streaming, closing, parsed;
     char request_id[65];
     size_t received, header, body, sent, output_length;
     double deadline;
-    char input[INPUT_LIMIT + 1], output[65536];
+    char *input;
+    size_t input_limit, body_limit;
+    char output[65536];
 } connection;
 static volatile sig_atomic_t stopping;
 static void signal_stop(int number)
@@ -50,6 +51,7 @@ static void close_connection(connection *c, service_session *s)
         service_disconnect_request(s, c->request_id);
     }
     close(c->fd);
+    free(c->input);
     memset(c, 0, sizeof(*c));
     c->fd = -1;
 }
@@ -136,7 +138,7 @@ static int headers(connection *c, char *method, char *path)
             size_t length = 0;
             for (; *colon >= '0' && *colon <= '9'; colon++) {
                 length = length * 10 + (unsigned)(*colon - '0');
-                if (length > BODY_LIMIT) {
+                if (length > c->body_limit) {
                     return -1;
                 }
             }
@@ -218,7 +220,7 @@ int main(int argc, char **argv)
 #ifdef SERVICE_NATIVE
     service_generator generator = {0};
     if (!service_native_open(argc, argv, &generator, &port)) {
-        fprintf(stderr, "native service requires explicit --model --tokenizer --strategy resident-fp32|compact-fp8-arithmetic --context 256 --prefill-chunk 256 --prefill mps|custom --port N; startup failed\n");
+        fprintf(stderr, "native service requires explicit --model --tokenizer --strategy resident-fp32|compact-fp8-arithmetic --prefill mps|custom --port N; optional --context 256|4352 --prefill-chunk 256|128 (128 requires4352); startup failed\n");
         return 2;
     }
 #else
@@ -295,7 +297,14 @@ int main(int argc, char **argv)
     fprintf(stderr, "{\"event\":\"listening\",\"port\":%u,\"model_loaded\":%s}\n",
             ntohs(address.sin_port), generator.info ? "true" : "false");
     fflush(stderr);
-    connection clients[CLIENTS] = {0};
+    connection *clients = calloc(CLIENTS, sizeof(*clients));
+    if (!clients) {
+        service_destroy(session);
+        free(session);
+        close(listener);
+        return 1;
+    }
+    size_t body_limit = generator.context_capacity > 256 ? 262144 : BODY_LIMIT;
     for (unsigned i = 0; i < CLIENTS; i++) {
         clients[i].fd = -1;
     }
@@ -339,6 +348,13 @@ int main(int argc, char **argv)
                 if (slot == CLIENTS || !nonblocking(fd)) {
                     close(fd);
                 } else {
+                    clients[slot].input_limit = HEADER_LIMIT + body_limit;
+                    clients[slot].body_limit = body_limit;
+                    clients[slot].input = malloc(clients[slot].input_limit + 1);
+                    if (!clients[slot].input) {
+                        close(fd);
+                        continue;
+                    }
                     clients[slot].fd = fd;
                     clients[slot].deadline = now() + 2.0;
                 }
@@ -353,7 +369,7 @@ int main(int argc, char **argv)
             int dead = (revents & (POLLERR | POLLHUP | POLLNVAL)) != 0;
             if (!dead && (revents & POLLIN)) {
                 ssize_t n = recv(c->fd, c->input + c->received,
-                                 INPUT_LIMIT - c->received, 0);
+                                 c->input_limit - c->received, 0);
                 if (n <= 0) {
                     dead = n == 0 || (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR);
                 } else if (c->parsed || c->streaming) {
@@ -425,6 +441,7 @@ int main(int argc, char **argv)
             close_connection(&clients[i], session);
         }
     }
+    free(clients);
     service_destroy(session);
     free(session);
     return exit_status;

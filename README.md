@@ -179,7 +179,12 @@ storage. [M5](docs/real-workload-m5.md) adds experimental prefix checkpoint cont
 with bounded full-model/state checks and real HTTP workload evaluation. Task quality
 is unchanged; measured benefits depend on workload and are versus explicit full
 recomputation, not the legacy policy. Resident/legacy defaults remain unchanged.
-Tools and longer context remain later work.
+Tools remain later work. [M6](docs/real-workload-m6.md) adds opt-in4352-position
+context and128/256-ID chunked ingestion, with bounded real-model runtime/session
+validation. Independent long-context correctness remains unverified; the useful-work
+panel passed2/3 distinct tasks under both reuse policies. Defaults remain256/resident/legacy.
+See [regression tooling](docs/long-context-testing.md) for fresh current-source builds;
+the [HTTP repeat](docs/long-context-http-testing.md) has separate verification scope.
 Protocol-test success is not model task success or performance evidence.
 
 M3 completes the bounded investigation and session/task evaluation, not independent

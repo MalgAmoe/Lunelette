@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* Production Darwin runtime. No Apple types cross this API.
- * Each context owns text weights, scratch and a 256-position KV cache.
+ * Each context owns text weights, scratch and an immutable configured KV capacity (default 256).
  * Single caller only; no concurrent calls, including destroy/reset.
  */
 typedef struct lunelette_metal lunelette_metal;
@@ -45,6 +45,18 @@ typedef struct {
  * nonzero reconstructed products. Unsupported inputs fail without fallback. */
 lunelette_metal *lunelette_metal_create_with_options(const char *path,
     const lunelette_metal_options *options, char *error, size_t capacity);
+/* Additive profile API; options ABI and old constructors remain unchanged.
+ * NULL limits selects C256/B256. Supported explicit pairs: 256/256,
+ * 4352/256 and 4352/128. No live resizing or implicit chunk orchestration. */
+typedef struct {
+    size_t context, block;
+} lunelette_metal_limits;
+lunelette_metal *lunelette_metal_create_configured(const char *path,
+    const lunelette_metal_options *options, const lunelette_metal_limits *limits,
+    char *error, size_t capacity);
+/* Query is nonmutating; NULL arguments fail and leave output unchanged. */
+int lunelette_metal_get_limits(const lunelette_metal *context, lunelette_metal_limits *limits);
+
 /* Named owned GPU allocations only, not driver/process memory. NULL arguments fail.
  * Query does not mutate the context or invalidate borrowed logits. */
 typedef struct {
@@ -57,10 +69,10 @@ void lunelette_metal_destroy(lunelette_metal *context);
 /* Reset makes old cache tails inaccessible; no GPU work or weight reload. */
 int lunelette_metal_reset(lunelette_metal *context, char *error, size_t capacity);
 
-/* Prefill requires an empty, valid sequence and 1..256 valid token IDs.
- * Decode appends one token to a nonempty sequence of length <256.
+/* Prefill requires an empty, valid sequence and 1..B valid token IDs and total length <=C.
+ * Decode appends one token to a nonempty sequence of length <C.
  * On success *logits borrows 131072 FP32 values until the next mutating context
- * call or context destroy (memory query and checkpoint create/destroy are exempt).
+ * call or context destroy (memory/limits queries and checkpoint create/destroy are exempt).
  * On failure *logits is NULL. Invalid arguments are rejected before GPU/cache
  * mutation; execution/allocation/nonfinite failures invalidate the sequence,
  * which must be reset before reuse. Never publish partial KV as a valid prefix.
@@ -72,7 +84,8 @@ int lunelette_metal_decode(lunelette_metal *context, int64_t token,
     const float **logits, char *error, size_t capacity);
 
 /* Batched nonempty suffix, requiring a valid nonempty prefix. Same validation,
- * failure and borrowed-output contracts as decode; not a loop of scalar decodes. */
+ * failure and borrowed-output contracts as decode; count<=B and length+count<=C.
+ * One block per call, not a loop of scalar decodes or logical-ingestion orchestration. */
 int lunelette_metal_append(lunelette_metal *context, const int64_t *ids, size_t count,
     const float **logits, char *error, size_t capacity);
 

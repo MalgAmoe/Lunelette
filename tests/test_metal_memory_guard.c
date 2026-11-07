@@ -1,4 +1,5 @@
 #include "../src/metal_memory_guard.h"
+#include "../src/metal_plan.h"
 #include <stdlib.h>
 #include <string.h>
 
@@ -60,6 +61,54 @@ static int run(fake *f, uint64_t weights, const char *message)
 
 int main(void)
 {
+    const uint64_t overhead = 310ULL * 1024 * 1024 + 2ULL * 1024 * 1024 * 1024;
+    const size_t contexts[] = {256, 4352, 4352};
+    const size_t blocks[] = {256, 256, 128};
+    const uint64_t scratch[] = {87819264, 222036992, 111280640};
+    const uint64_t requirements[] = {16188567552ULL, 17203589120ULL, 17092832768ULL};
+    for (size_t i = 0; i < 3; i++) {
+        metal_allocation_plan plan;
+        CHECK(!metal_plan_create((lunelette_metal_limits){contexts[i], blocks[i]}, &plan));
+        CHECK(plan.scratch_bytes == scratch[i]);
+        CHECK(plan.kv_bytes == (i ? 926941184 : 54525952));
+        CHECK(plan.scratch[22] == 4 * 32 * contexts[i] * blocks[i]);
+        size_t maximum = plan.kv_each;
+        for (size_t slot = 0; slot < METAL_PLAN_SLOTS; slot++) {
+            if (plan.scratch[slot] > maximum) {
+                maximum = plan.scratch[slot];
+            }
+        }
+        CHECK(!metal_plan_fits(&plan, maximum));
+        CHECK(metal_plan_fits(&plan, maximum - 1));
+        CHECK(metal_plan_fits(&plan, 0));
+        lunelette_metal_memory memory = {.weight_bytes = 13716025344ULL};
+        uint64_t base;
+        CHECK(!metal_plan_guard_base(&plan, &memory, &base));
+        CHECK(base + overhead == requirements[i]);
+        fake threshold = {.low = base + overhead};
+        run(&threshold, base, "after 3s");
+        threshold = (fake){.low = base + overhead + 1};
+        run(&threshold, base, NULL);
+        CHECK(!threshold.sleeps);
+        memory.weight_bytes = 4637454336ULL;
+        memory.conversion_stage_bytes = 113246208ULL;
+        CHECK(!metal_plan_guard_base(&plan, &memory, &base));
+        CHECK(base + overhead == requirements[i] - 8965324800ULL);
+        memory.weight_bytes = UINT64_MAX;
+        CHECK(metal_plan_guard_base(&plan, &memory, &base));
+    }
+    metal_allocation_plan rejected;
+    const lunelette_metal_limits invalid[] = {{0, 0}, {256, 128}, {4352, 64},
+        {4352, 4352}, {4353, 256}, {SIZE_MAX, SIZE_MAX}};
+    for (size_t i = 0; i < sizeof invalid / sizeof invalid[0]; i++) {
+        CHECK(metal_plan_create(invalid[i], &rejected));
+    }
+    size_t product;
+    CHECK(metal_plan_multiply(SIZE_MAX, 2, &product));
+    CHECK(!metal_plan_multiply(SIZE_MAX, 1, &product) && product == SIZE_MAX);
+    CHECK(!metal_plan_buffer_fits(1024, 4, 4096, &product) && product == 4096);
+    CHECK(metal_plan_buffer_fits(1024, 4, 4095, &product));
+    CHECK(metal_plan_buffer_fits(SIZE_MAX, 4, UINT64_MAX, &product));
     fake f = {.sufficient_at = 1};
     run(&f, 0, NULL);
     CHECK(f.reads == 1 && f.clocks == 0 && f.sleeps == 0);

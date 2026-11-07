@@ -53,7 +53,7 @@ int lunelette_metal_project(LuneletteMetalOwner *owner, id<MTLCommandBuffer> com
     size_t weight, int input, int output, uint32_t rows, uint32_t cols, size_t count)
 {
     if (!owner || !command || weight < 2 || weight >= LUNELETTE_METAL_WEIGHT_COUNT ||
-        !count || count > LUNELETTE_CONTEXT_LIMIT || input < 0 || input >= METAL_BUFFER_COUNT ||
+        !count || count > owner->limits.block || input < 0 || input >= METAL_BUFFER_COUNT ||
         output < 0 || output >= METAL_BUFFER_COUNT) {
         return -1;
     }
@@ -186,6 +186,11 @@ static int encode_layer(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command
 int lunelette_metal_encode(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command,
     size_t count, char *error, size_t capacity)
 {
+    if (!owner || !command || !count || count > owner->limits.block ||
+        count > owner->limits.context || owner->length > owner->limits.context - count) {
+        snprintf(error, capacity, "Metal encode exceeds configured block/context");
+        return -1;
+    }
     for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
         if (encode_layer(owner, command, layer, count) != 0) {
             snprintf(error, capacity, "Metal encoder creation failed in layer %zu; reset required",

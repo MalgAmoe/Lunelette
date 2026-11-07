@@ -70,7 +70,7 @@ Describe implemented capabilities accurately: embedding lookup is not full infer
 - Reconstruct projection weights as FP8 decoded to FP32 times BF16 scale widened
   to FP32, with no BF16 product rounding. Validate scalar positive finite weight
   and activation scales; activation scales are unused in FP32 execution (not W8A8).
-- Keep 182 FP8 projections, 53 BF16 norms, BF16 embedding/tied head and context256.
+- Keep 182 FP8 projections, 53 BF16 norms, BF16 embedding/tied head and default context256 (opt-in4352).
   Resident weights remain 13,716,025,344 bytes; preserve the 24 GiB peak guard.
 - Fresh fixtures must come from this checkpoint and true cached decode. Archived
   BF16 fixtures are historical, not an oracle for the current runtime.

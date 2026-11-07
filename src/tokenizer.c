@@ -382,47 +382,121 @@ static size_t piece_end(const tk_character *c, size_t n, size_t start)
     return end; /* final \s+; all Unicode scalars are covered */
 }
 
-static void bpe(const lunelette_tokenizer *t, const unsigned char *text, size_t length,
-                uint32_t *ids, size_t *count)
+/* One heap entry per original byte position, including inactive entries at
+ * TK_NONE rank. Links retain byte offsets, so equal ranks sort leftmost.
+ * Updating just the two adjacent pairs avoids stale candidates entirely.
+ * Scratch is one bounded allocation: length * (sizeof(tk_merge) + sizeof(size_t)). */
+typedef struct {
+    size_t previous;
+    size_t next;
+    size_t end;
+    size_t position;
+    unsigned rank;
+} tk_merge;
+
+static int merge_less(const tk_merge *nodes, size_t a, size_t b)
 {
-    unsigned rank = lookup(t, text, length);
-    size_t boundaries[LUNELETTE_TOKENIZER_MAX_INPUT + 1];
-    if (rank != TK_NONE) {
-        ids[(*count)++] = rank + 1000;
-        return;
+    return nodes[a].rank < nodes[b].rank ||
+        (nodes[a].rank == nodes[b].rank && a < b);
+}
+
+static void merge_fix(tk_merge *nodes, size_t *heap, size_t length, size_t node)
+{
+    size_t p = nodes[node].position;
+    while (p && merge_less(nodes, node, heap[(p - 1) / 2])) {
+        heap[p] = heap[(p - 1) / 2];
+        nodes[heap[p]].position = p;
+        p = (p - 1) / 2;
     }
-    for (size_t i = 0; i <= length; i++) {
-        boundaries[i] = i;
-    }
-    size_t parts = length;
-    while (parts > 1) {
-        unsigned best_rank = TK_NONE;
-        size_t best = 0;
-        for (size_t i = 0; i + 1 < parts; i++) {
-            rank = lookup(t, text + boundaries[i], boundaries[i + 2] - boundaries[i]);
-            if (rank < best_rank) { /* strict less: lowest rank, LEFTMOST tie */
-                best_rank = rank;
-                best = i;
-            }
+    while (p < length / 2) {
+        size_t child = 2 * p + 1;
+        if (child + 1 < length && merge_less(nodes, heap[child + 1], heap[child])) {
+            child++;
         }
-        if (best_rank == TK_NONE) {
+        if (!merge_less(nodes, heap[child], node)) {
             break;
         }
-        memmove(boundaries + best + 1, boundaries + best + 2,
-                (parts - best - 1) * sizeof(*boundaries));
-        parts--;
+        heap[p] = heap[child];
+        nodes[heap[p]].position = p;
+        p = child;
     }
-    for (size_t i = 0; i < parts; i++) {
-        rank = lookup(t, text + boundaries[i], boundaries[i + 1] - boundaries[i]);
+    heap[p] = node;
+    nodes[node].position = p;
+}
+
+static int bpe(const lunelette_tokenizer *t, const unsigned char *text, size_t length,
+               uint32_t *ids, size_t *count)
+{
+    unsigned rank = lookup(t, text, length);
+    if (rank != TK_NONE) {
+        ids[(*count)++] = rank + 1000;
+        return 1;
+    }
+    if (!length) {
+        return 1;
+    }
+    if (length > SIZE_MAX / (sizeof(tk_merge) + sizeof(size_t))) {
+        return 0;
+    }
+    tk_merge *nodes = malloc(length * (sizeof(*nodes) + sizeof(size_t)));
+    if (!nodes) {
+        return 0;
+    }
+    size_t *heap = (size_t *)(nodes + length);
+    for (size_t i = 0; i < length; i++) {
+        nodes[i].previous = i ? i - 1 : length;
+        nodes[i].next = i + 1;
+        nodes[i].end = i + 1;
+        nodes[i].position = i;
+        nodes[i].rank = TK_NONE;
+        heap[i] = i;
+    }
+    for (size_t i = 0; i + 1 < length; i++) {
+        nodes[i].rank = lookup(t, text + i, 2);
+        merge_fix(nodes, heap, length, i);
+    }
+    while (nodes[heap[0]].rank != TK_NONE) {
+        size_t left = heap[0];
+        size_t right = nodes[left].next;
+        size_t next = nodes[right].next;
+        size_t previous = nodes[left].previous;
+        nodes[left].end = nodes[right].end;
+        nodes[left].next = next;
+        if (next < length) {
+            nodes[next].previous = left;
+        }
+        nodes[right].rank = TK_NONE;
+        merge_fix(nodes, heap, length, right);
+        nodes[left].rank = next < length ?
+            lookup(t, text + left, nodes[next].end - left) : TK_NONE;
+        merge_fix(nodes, heap, length, left);
+        if (previous < length) {
+            nodes[previous].rank = lookup(t, text + previous, nodes[left].end - previous);
+            merge_fix(nodes, heap, length, previous);
+        }
+    }
+    for (size_t i = 0; i < length; i = nodes[i].next) {
+        rank = lookup(t, text + i, nodes[i].end - i);
         ids[(*count)++] = rank + 1000;
     }
+    free(nodes);
+    return 1;
 }
 
 int lunelette_tokenizer_encode(const lunelette_tokenizer *t,
                                const unsigned char *text, size_t length,
                                uint32_t **ids, size_t *count, char *error, size_t error_size)
 {
-    tk_character chars[LUNELETTE_TOKENIZER_MAX_INPUT + 1];
+    return lunelette_tokenizer_encode_with_limit(t, text, length,
+        LUNELETTE_TOKENIZER_MAX_INPUT, ids, count, error, error_size);
+}
+
+int lunelette_tokenizer_encode_with_limit(const lunelette_tokenizer *t,
+                               const unsigned char *text, size_t length,
+                               size_t input_limit, uint32_t **ids, size_t *count, char *error, size_t error_size)
+{
+    tk_character local_chars[LUNELETTE_TOKENIZER_MAX_INPUT + 1];
+    tk_character *chars = local_chars;
     size_t n = 0;
     size_t offset = 0;
     if (ids) {
@@ -431,13 +505,25 @@ int lunelette_tokenizer_encode(const lunelette_tokenizer *t,
     if (count) {
         *count = 0;
     }
-    if (!t || !ids || !count || (!text && length) || length > LUNELETTE_TOKENIZER_MAX_INPUT) {
-        return fail(error, error_size, "tokenizer encode: invalid arguments or input exceeds 4096 bytes");
+    if (!t || !ids || !count || (!text && length) || (input_limit != LUNELETTE_TOKENIZER_MAX_INPUT &&
+        input_limit != LUNELETTE_TOKENIZER_LONG_INPUT) || length > input_limit) {
+        return fail(error, error_size, input_limit == LUNELETTE_TOKENIZER_MAX_INPUT ?
+            "tokenizer encode: invalid arguments or input exceeds 4096 bytes" :
+            "tokenizer encode: invalid arguments or input exceeds 32768 bytes");
+    }
+    if (length > LUNELETTE_TOKENIZER_MAX_INPUT) {
+        chars = malloc((length + 1) * sizeof(*chars));
+        if (!chars) {
+            return fail(error, error_size, "tokenizer encode: allocation failed");
+        }
     }
     while (offset < length) {
         size_t width;
         unsigned cp;
         if (!tj_utf8(text + offset, length - offset, &width, &cp)) {
+            if (chars != local_chars) {
+                free(chars);
+            }
             return fail(error, error_size, "tokenizer encode: invalid UTF-8 at byte %zu", offset);
         }
         chars[n].cp = cp;
@@ -448,18 +534,35 @@ int lunelette_tokenizer_encode(const lunelette_tokenizer *t,
     chars[n].offset = length;
     uint32_t *result = malloc((length ? length : 1) * sizeof(*result));
     if (!result) {
+        if (chars != local_chars) {
+            free(chars);
+        }
         return fail(error, error_size, "tokenizer encode: allocation failed");
     }
     size_t start = 0;
     while (start < n) {
         size_t end = piece_end(chars, n, start);
         if (end <= start || end > n) {
+            if (chars != local_chars) {
+                free(chars);
+            }
             free(result);
             *count = 0;
             return fail(error, error_size, "tokenizer encode: internal splitter coverage error");
         }
-        bpe(t, text + chars[start].offset, chars[end].offset - chars[start].offset, result, count);
+        if (!bpe(t, text + chars[start].offset, chars[end].offset - chars[start].offset,
+                 result, count)) {
+            if (chars != local_chars) {
+                free(chars);
+            }
+            free(result);
+            *count = 0;
+            return fail(error, error_size, "tokenizer encode: allocation failed");
+        }
         start = end;
+    }
+    if (chars != local_chars) {
+        free(chars);
     }
     *ids = result;
     return 1;

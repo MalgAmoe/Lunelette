@@ -35,5 +35,8 @@ int lunelette_metal_weights_load_raw(lunelette_metal_weights *weights, size_t in
 /* Validates every allocation size and sums before allocation/admission. */
 int lunelette_metal_weights_account(const lunelette_metal_weights *weights,
     lunelette_metal_strategy strategy, lunelette_metal_memory *memory);
+int lunelette_metal_weights_account_configured(const lunelette_metal_weights *weights,
+    lunelette_metal_strategy strategy, lunelette_metal_limits limits,
+    lunelette_metal_memory *memory);
 void lunelette_metal_weights_close(lunelette_metal_weights *weights);
 #endif

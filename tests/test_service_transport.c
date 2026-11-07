@@ -21,6 +21,7 @@ static int injected_poll(struct pollfd *fds, nfds_t count, int timeout)
 #include "../service/http.c"
 #undef main
 #undef poll
+#include "metal_plan.h"
 
 int main(void)
 {
@@ -61,6 +62,21 @@ int main(void)
         fprintf(stderr, "poll failure regression: status=%d calls=%u\n", status, poll_calls);
         return 1;
     }
+    /* Conservative incremental census: all 16 inputs, whole long tokenizer
+     * workspace (not merely its delta), parser copy, generation/prefix work,
+     * both pairs of ledgers, extra stack, plus 1 MiB rounding/allocator slack. */
+    size_t incremental_host = CLIENTS * (size_t)(262144 - BODY_LIMIT) +
+        2293792 + 262145 + 2 * 34816 + 4 * (4352 - 256) * sizeof(unsigned) +
+        100000 + 1048576;
+    metal_allocation_plan plan;
+    if (metal_plan_create((lunelette_metal_limits){4352, 256}, &plan) ||
+        plan.guard_growth - (plan.scratch_bytes + plan.kv_bytes - 142345216) != 8388608 ||
+        incremental_host > 8388608) {
+        return 1;
+    }
+    printf("incremental_host_census_with_slack=%zu allowance=8388608\n", incremental_host);
+    printf("connection=%zu connections16=%zu long_inputs16=%zu\n",
+           sizeof(connection), 16 * sizeof(connection), (size_t)16 * 266241);
     puts("service transport EINTR/fatal-poll cleanup passed");
     return 0;
 }

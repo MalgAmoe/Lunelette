@@ -2,7 +2,23 @@
 #include "../service/session.c"
 #include <unistd.h>
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%d: %s\n", __LINE__, #x); exit(1); } } while (0)
+_Static_assert(sizeof(((service_session *)0)->history) / sizeof(service_request) == 256,
+               "request history must not grow with context");
+_Static_assert(sizeof(((service_request *)0)->token_ids) / sizeof(unsigned) == 256,
+               "generation IDs remain independently bounded");
+_Static_assert(sizeof(((service_request *)0)->decode_us) / sizeof(uint64_t) == 256,
+               "generation timing remains independently bounded");
 static service_session session;
+static int frame_stub(void *c, const unsigned char *t, size_t n, int i, unsigned *o, unsigned *k)
+{
+    (void)c;
+    (void)t;
+    (void)n;
+    (void)i;
+    (void)o;
+    (void)k;
+    return 0;
+}
 int main(void)
 {
     service_request *r = &session.history[0];
@@ -13,13 +29,19 @@ int main(void)
         r->decode_us[i] = UINT64_MAX;
         r->token_ids[i] = UINT_MAX;
     }
-    r->work = (service_work){.full_attempted = 65536, .full_committed = 65536,
-        .suffix_attempted = 65536, .suffix_committed = 65536,
-        .pending_attempted = 256, .pending_committed = 256, .prefill_calls = 256,
-        .append_calls = 256, .decode_calls = 256, .decode_attempted = 256,
-        .decode_committed = 256, .logit_restores = 1};
+    r->work = (service_work){.full_attempted = UINT_MAX, .full_committed = UINT_MAX,
+        .suffix_attempted = UINT_MAX, .suffix_committed = UINT_MAX,
+        .pending_attempted = UINT_MAX, .pending_committed = UINT_MAX, .prefill_calls = UINT_MAX,
+        .append_calls = UINT_MAX, .decode_calls = UINT_MAX, .decode_attempted = UINT_MAX,
+        .decode_committed = UINT_MAX, .logit_restores = UINT_MAX,
+        .recompute_attempted = UINT_MAX, .recompute_committed = UINT_MAX};
     r->suffix_us = UINT64_MAX;
-    r->suffix_steps = 256;
+    r->suffix_steps = UINT_MAX;
+    r->prefill_steps = UINT_MAX;
+    r->session_id = r->before_logical = r->before_committed = r->before_pending = UINT_MAX;
+    session.logical = session.committed = session.pending = UINT_MAX;
+    strcpy(r->operation, "checkpoint");
+    r->materialize_ms = r->snapshot_ms = r->restore_ms = 9223372036854.0;
     r->prefill_us = r->decode_total_us = UINT64_MAX;
     r->prefill_ms = r->decode_ms = r->total_ms = r->framing_ms = 9223372036854.0;
     r->first_token_ms = r->cancel_received_ms = r->cancel_latency_ms = 9223372036854.0;
@@ -34,9 +56,13 @@ int main(void)
     CHECK(metrics(r, 1, measured, sizeof(measured)));
     char small[10];
     CHECK(!metrics(r, 1, small, sizeof(small)));
-    event_locked(&session, "cancelled", "", "cancelled");
+    memset(r->id, 'w', 64);
+    r->id[64] = 0;
+    event_locked(&session, "cancelled", "", "unsupported_output_token");
+    strcpy(r->id, "worst");
     CHECK(session.count == 1);
     CHECK(strlen(session.events[0]) < SERVICE_EVENT_BYTES);
+    printf("maximum exercised metrics=%zu terminal=%zu\n", strlen(measured), strlen(session.events[0]));
     tj_document d;
     CHECK(tj_read_memory(session.events[0], strlen(session.events[0]), &d));
     CHECK(d.nodes[tj_field(&d, 1, "metrics")].kind == '{');
@@ -77,6 +103,30 @@ int main(void)
     memset(r->text, 1, 4096);
     CHECK(service_route(&session, "GET", "/requests/worst", "", 0,
                         small, sizeof(small), &stream) == 500);
+    session.generator.frame = frame_stub;
+    session.generator.context_capacity = 4352;
+    session.session = 1;
+    session.logical = session.committed = 4352;
+    session.pending = 0;
+    strcpy(session.state, "ready");
+    for (unsigned i = 0; i < 4352; i++) {
+        session.tokens[i] = 131071;
+    }
+    CHECK(service_route(&session, "GET", "/sessions/1", "", 0,
+                        reply, sizeof(reply), &stream) == 200);
+    CHECK(strlen(reply) < 31000);
+    CHECK(tj_read_memory_limits(reply, strlen(reply), &d, 65536, 32768, 10000, 4));
+    unsigned ids = tj_field(&d, 1, "token_ids");
+    unsigned ledger_count = 0;
+    for (unsigned node = d.nodes[ids].child; node; node = d.nodes[node].next) {
+        unsigned id;
+        CHECK(tj_integer(&d, node, &id) && id == 131071);
+        ledger_count++;
+    }
+    CHECK(ledger_count == 4352);
+    tj_free(&d);
+    printf("envelopes: metrics<%u event<%u retained<65536 ledger=%u IDs\n",
+           SERVICE_METRIC_BYTES, SERVICE_EVENT_BYTES, ledger_count);
     pthread_mutex_destroy(&session.lock);
 #ifndef __APPLE__
     CHECK(service_process_footprint() == 0);

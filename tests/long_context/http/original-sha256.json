@@ -1,0 +1,16 @@
+{
+  "driver.py": "a9c62b0e2979263c7357836d429db07c9f5514fda945d7f16e8ee767bba058f2",
+  "provider.py": "be01663577f04534bb952e2a82aeea72d74eaf6ca657ba1f6ebc744d880fb1fb",
+  "test_driver.py": "411f7f1f51eec6c91f3e4d6738ddb0d2ce74668472ce98adec9328af7466f86f",
+  "fixtures/texts.json": "c75ce6178004d67f314fddae2a089995834a1a24bba44797f3c47f5ac7643d3d",
+  "fixtures/spaces.txt": "e8ff7e9b520474a6f067f1c6c8a6ba49ec191b9b7ae24ce74ccc1bf7543d250a",
+  "fixtures/document.txt": "0a979877f2626af4798cec566a2ef1578f16cf16193363588fca31fd0713b18f",
+  "fixtures/short.txt": "232df73243b94bd9f3dcf303b81a724370ebdfa12af3037cf5cca742070cdd98",
+  "fixtures/new-user.txt": "385f77839bce899cb9b1309a00d350494f0fe08289c8b97a4832a62d37723fd7",
+  "fixtures/negative.json": "c6eb51e8d9a64a2a0922672787a206db053562f9759dd5318f5fdf7b75b9f0be",
+  "child.py": "e708499b2a4d1a95af8f43fd02bf1266806bddd97d586bafc43bef67b9db88e9",
+  "observe.c": "158f601dcbe3467455a38f5f4d8949907812232253a9dbb3b90ef7240b8dadd5",
+  "build.py": "1f463fd0c2c531182bb0b607c7a113b9e558eaacc89d3047e0d5a359e36cf6ef",
+  "adapter.py": "16ae5a8eb9ab33e3e01f897f5befd68f4f89ec11e6597d2c755678acfc1e5382",
+  "runner_03.py": "98f78b433af898759690c9f168ae460e720269563d059b58b0b60d24727c88a8"
+}

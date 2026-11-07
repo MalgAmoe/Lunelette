@@ -210,6 +210,32 @@ static void contract_tests(lunelette_tokenizer *t, int synthetic)
     roundtrip(t, boundary, sizeof(boundary));
     CHECK(!lunelette_tokenizer_encode(t, boundary, 4097, &ids, &count, error, sizeof(error)));
     CHECK(!ids && !count);
+    unsigned char *long_text = malloc(32769);
+    CHECK(long_text);
+    memset(long_text, '7', 32769); /* Numbers split individually: no hidden token cap. */
+#define ENCODE_LIMIT(n, limit) lunelette_tokenizer_encode_with_limit(t, long_text, n, limit, &ids, &count, error, sizeof error)
+    const size_t sizes[] = {0, 4096, 4097, 32768};
+    for (size_t k = 0; k < sizeof sizes / sizeof sizes[0]; k++) {
+        CHECK(ENCODE_LIMIT(sizes[k], 32768));
+        CHECK(count == sizes[k]);
+        for (size_t j = 0; j < count; j++) {
+            CHECK(ids[j] >= 1000 && ids[j] < 131072);
+            if (synthetic) {
+                CHECK(ids[j] == 1000 + '7');
+            }
+        }
+        free(ids);
+    }
+    CHECK(!ENCODE_LIMIT(32769, 32768) && !ids && !count);
+    CHECK(!ENCODE_LIMIT(SIZE_MAX, 32768) && !ids && !count);
+    CHECK(!ENCODE_LIMIT(1, SIZE_MAX) && !ids && !count);
+    CHECK(!ENCODE_LIMIT(1, 4097) && !ids && !count);
+    CHECK(!ENCODE_LIMIT(4097, 4096) && !ids && !count);
+    long_text[32767] = 0x80;
+    CHECK(!ENCODE_LIMIT(32768, 32768) && !ids && !count);
+    CHECK(strstr(error, "invalid UTF-8 at byte 32767"));
+    free(long_text);
+#undef ENCODE_LIMIT
     const unsigned char *bad[] = {(const unsigned char *)"\x80", (const unsigned char *)"\xc0\x80",
         (const unsigned char *)"\xed\xa0\x80", (const unsigned char *)"\xf4\x90\x80\x80",
         (const unsigned char *)"\xe2\x82"};

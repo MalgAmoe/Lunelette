@@ -867,6 +867,263 @@ static void test_state(LuneletteMetalOwner *owner)
     CHECK(lunelette_metal_reset(NULL, NULL, 0) != 0);
 }
 
+/* Descriptor-only allocation doubles: no GPU memory or arithmetic implied. */
+static unsigned descriptor_live;
+@interface AllocationBuffer : NSObject {
+@public
+    NSUInteger bytes;
+}
+@end
+@implementation AllocationBuffer
+- (NSUInteger)length
+{
+    return bytes;
+}
+- (void)dealloc
+{
+    descriptor_live--;
+}
+@end
+
+@interface AllocationDevice : NSObject {
+@public
+    size_t calls, fail_at;
+    NSUInteger maximum;
+}
+@end
+@implementation AllocationDevice
+- (NSUInteger)maxBufferLength
+{
+    return maximum;
+}
+- (id<MTLBuffer>)newBufferWithLength:(NSUInteger)length options:(MTLResourceOptions)options
+{
+    CHECK(length <= maximum);
+    calls++;
+    if (calls == fail_at) {
+        return nil;
+    }
+    AllocationBuffer *buffer = [AllocationBuffer new];
+    buffer->bytes = length;
+    descriptor_live++;
+    return (id<MTLBuffer>)buffer;
+}
+@end
+
+static void test_long_allocation(void)
+{
+    char error[512];
+    const lunelette_metal_limits profiles[] = {{256, 256}, {4352, 128}, {4352, 256}};
+    for (size_t profile = 0; profile < sizeof profiles / sizeof profiles[0]; profile++) {
+        for (size_t fail = 1; fail <= METAL_BUFFER_COUNT + 2 * LUNELETTE_MODEL_LAYERS; fail++) {
+            LuneletteMetalOwner *owner = [LuneletteMetalOwner new];
+            AllocationDevice *device = [AllocationDevice new];
+            device->maximum = NSUIntegerMax;
+            device->fail_at = fail;
+            owner->device = (id<MTLDevice>)device;
+            owner->limits = profiles[profile];
+            CHECK(lunelette_metal_allocate_buffers(owner, error, sizeof error));
+            /* KV allocates a key/value pair before testing either result. */
+            CHECK(device->calls >= fail && device->calls <= fail + 1);
+            owner = nil;
+            CHECK(!descriptor_live);
+        }
+        LuneletteMetalOwner *owner = [LuneletteMetalOwner new];
+        AllocationDevice *device = [AllocationDevice new];
+        device->maximum = 1;
+        owner->device = (id<MTLDevice>)device;
+        owner->limits = profiles[profile];
+        CHECK(lunelette_metal_allocate_buffers(owner, error, sizeof error));
+        CHECK(!device->calls && strstr(error, "maxBufferLength"));
+        device->maximum = NSUIntegerMax;
+        CHECK(!lunelette_metal_allocate_buffers(owner, error, sizeof error));
+        CHECK(device->calls == METAL_BUFFER_COUNT + 2 * LUNELETTE_MODEL_LAYERS);
+        metal_allocation_plan plan;
+        CHECK(!metal_plan_create(profiles[profile], &plan));
+        lunelette_metal context = {(__bridge void *)owner};
+        lunelette_metal_memory memory;
+        CHECK(!lunelette_metal_get_memory(&context, &memory));
+        CHECK(memory.scratch_bytes == plan.scratch_bytes && memory.kv_bytes == plan.kv_bytes);
+        CHECK(memory.total_bytes == plan.scratch_bytes + plan.kv_bytes);
+        CHECK(!memory.weight_bytes && !memory.conversion_stage_bytes);
+        owner = nil;
+        CHECK(!descriptor_live);
+    }
+}
+
+/* Isolated real shader check, not model output: the final value row is a large
+ * sentinel. Row zero must mask it; row one must include it using total stride C. */
+static void test_long_causal(LuneletteMetalOwner *owner)
+{
+    const size_t total = 4352, count = 2;
+    owner->limits = (lunelette_metal_limits){4352, 256};
+    owner->length = total - count;
+    id<MTLBuffer> query = buffer(owner, count * 4096);
+    id<MTLBuffer> keys = buffer(owner, total * 1024);
+    id<MTLBuffer> values = buffer(owner, total * 1024);
+    id<MTLBuffer> scores = buffer(owner, count * 32 * total + 4);
+    id<MTLBuffer> output = buffer(owner, count * 4096 + 4);
+    memset(query.contents, 0, query.length);
+    memset(keys.contents, 0, keys.length);
+    float *v = values.contents;
+    for (size_t i = 0; i < total * 1024; i++) {
+        v[i] = i >= (total - 1) * 1024 ? 4352.0f : 1.0f;
+    }
+    float *score = scores.contents, *actual = output.contents;
+    for (size_t i = 0; i < 4; i++) {
+        score[count * 32 * total + i] = 12345;
+        actual[count * 4096 + i] = 12345;
+    }
+    id<MTLCommandBuffer> command = [owner->queue commandBuffer];
+    CHECK(!lunelette_metal_encode_operator(owner, command, METAL_SCORES,
+        query, keys, scores, count, 0, 0, count, 0));
+    CHECK(!lunelette_metal_encode_operator(owner, command, METAL_ATTEND,
+        scores, values, output, count, 0, 0, count, 0));
+    complete(command);
+    for (size_t head = 0; head < 32; head++) {
+        CHECK(score[head * total + total - 1] == 0);
+        CHECK(fabs(score[(32 + head) * total + total - 1] - 1.0 / total) < 1e-9);
+    }
+    for (size_t i = 0; i < count * 4096; i++) {
+        double expected = i < 4096 ? 1.0 : 8703.0 / 4352;
+        CHECK(fabs(actual[i] - expected) < 2e-4);
+    }
+    for (size_t i = 0; i < 4; i++) {
+        CHECK(score[count * 32 * total + i] == 12345);
+        CHECK(actual[count * 4096 + i] == 12345);
+    }
+    owner->length = 0;
+    puts("Long causal sentinel/score stride/output guards PASS (isolated real GPU shaders)");
+}
+
+/* A seeded nonzero prefix is intentional: no model/compute result is claimed.
+ * Production traversal runs real GPU KV blits at the absolute tail offsets. */
+static void test_long_state(LuneletteMetalOwner *owner)
+{
+    char error[512];
+    lunelette_metal_limits unsupported = {4352, 64};
+    CHECK(!lunelette_metal_create_configured("/no-model", NULL, &unsupported,
+        error, sizeof error));
+    CHECK(strstr(error, "unsupported context/block"));
+    id<MTLCommandQueue> real_queue = owner->queue;
+    lunelette_metal context = {(__bridge void *)owner};
+    lunelette_metal_limits defaults;
+    CHECK(!lunelette_metal_get_limits(&context, &defaults));
+    CHECK(defaults.context == 256 && defaults.block == 256);
+    CHECK(lunelette_metal_get_limits(NULL, &defaults));
+    CHECK(defaults.context == 256 && defaults.block == 256);
+    CHECK(lunelette_metal_get_limits(&context, NULL));
+    owner->prefill_mode = LUNELETTE_METAL_PREFILL_CUSTOM;
+    owner->buffers[METAL_X] = buffer(owner, 2 * 3072);
+    owner->buffers[METAL_COS] = buffer(owner, 2 * 128);
+    owner->buffers[METAL_SIN] = buffer(owner, 2 * 128);
+    owner->buffers[METAL_POSITIONS] = buffer(owner, 2);
+    owner->buffers[METAL_ROTATED_K] = buffer(owner, 2 * LUNELETTE_MODEL_KV);
+    owner->buffers[METAL_V] = buffer(owner, 2 * LUNELETTE_MODEL_KV);
+    owner->buffers[METAL_LOGITS] = buffer(owner, LUNELETTE_MODEL_VOCAB);
+    memset(owner->buffers[METAL_LOGITS].contents, 0, owner->buffers[METAL_LOGITS].length);
+    SyntheticCommand *synthetic = [SyntheticCommand new];
+    synthetic->completion = MTLCommandBufferStatusCompleted;
+    SyntheticQueue *queue = [SyntheticQueue new];
+    queue->command = synthetic;
+    owner->queue = (id<MTLCommandQueue>)queue;
+    const size_t token_bytes = LUNELETTE_MODEL_KV * sizeof(float);
+    /* Include one guard row beyond capacity to detect overrun. */
+    for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+        owner->keys[layer] = buffer(owner, 4353 * LUNELETTE_MODEL_KV);
+        owner->values[layer] = buffer(owner, 4353 * LUNELETTE_MODEL_KV);
+    }
+    for (size_t block = 128; block <= 256; block *= 2) {
+        owner->limits = (lunelette_metal_limits){4352, block};
+        lunelette_metal_limits resolved;
+        CHECK(!lunelette_metal_get_limits(&context, &resolved));
+        CHECK(resolved.context == 4352 && resolved.block == block);
+        CHECK(!lunelette_metal_reset(&context, error, sizeof error));
+        int64_t ids[257] = {0};
+        const float *logits;
+        owner->buffers[METAL_X] = buffer(owner, block * 3072);
+        owner->buffers[METAL_COS] = buffer(owner, block * 128);
+        owner->buffers[METAL_SIN] = buffer(owner, block * 128);
+        owner->buffers[METAL_POSITIONS] = buffer(owner, block);
+        CHECK(lunelette_metal_prefill(&context, ids, block + 1, &logits,
+            error, sizeof error));
+        CHECK(owner->length == 0 && owner->valid);
+        CHECK(lunelette_metal_mps_prepare(owner, block + 1, error, sizeof error));
+        CHECK(!lunelette_metal_prefill(&context, ids, block, &logits, error, sizeof error));
+        CHECK(owner->length == block);
+        size_t block_calls = synthetic->calls;
+        CHECK(lunelette_metal_append(&context, ids, block + 1, &logits,
+            error, sizeof error));
+        CHECK(owner->length == block && synthetic->calls == block_calls && owner->valid);
+        CHECK(!lunelette_metal_append(&context, ids, block, &logits, error, sizeof error));
+        CHECK(owner->length == 2 * block);
+        uint32_t *block_positions = owner->buffers[METAL_POSITIONS].contents;
+        CHECK(block_positions[0] == block && block_positions[block - 1] == 2 * block - 1);
+        CHECK(!lunelette_metal_reset(&context, error, sizeof error));
+        owner->length = 4350;
+        owner->endpoint_logits_valid = true;
+        lunelette_metal_checkpoint *checkpoint = NULL;
+        CHECK(!lunelette_metal_checkpoint_create(&context, &checkpoint, error, sizeof error));
+        size_t calls = synthetic->calls;
+        CHECK(lunelette_metal_append(&context, ids, block + 1, &logits, error, sizeof error));
+        CHECK(synthetic->calls == calls && owner->length == 4350 && owner->valid);
+        for (unsigned branch = 0; branch < 2; branch++) {
+            CHECK(!lunelette_metal_checkpoint_restore(&context, checkpoint, &logits,
+                error, sizeof error));
+            for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+                memset(owner->keys[layer].contents, 0x5a, owner->keys[layer].length);
+                memset(owner->values[layer].contents, 0x5a, owner->values[layer].length);
+            }
+            memset(owner->buffers[METAL_ROTATED_K].contents, 0x20 + branch, 2 * token_bytes);
+            memset(owner->buffers[METAL_V].contents, 0x40 + branch, 2 * token_bytes);
+            synthetic->kv_command = [real_queue commandBuffer];
+            CHECK(synthetic->kv_command);
+            CHECK(!lunelette_metal_append(&context, ids, 2, &logits, error, sizeof error));
+            synthetic->kv_command = nil;
+            CHECK(owner->length == 4352 && owner->valid);
+            uint32_t *positions = owner->buffers[METAL_POSITIONS].contents;
+            CHECK(positions[0] == 4350 && positions[1] == 4351);
+            float cosine[128], sine[128];
+            CHECK(!lunelette_metal_yarn(4351, cosine, sine));
+            CHECK(!memcmp(cosine, (float *)owner->buffers[METAL_COS].contents + 128,
+                sizeof cosine));
+            CHECK(!memcmp(sine, (float *)owner->buffers[METAL_SIN].contents + 128,
+                sizeof sine));
+            for (size_t layer = 0; layer < LUNELETTE_MODEL_LAYERS; layer++) {
+                id<MTLBuffer> caches[] = {owner->keys[layer], owner->values[layer]};
+                for (unsigned kind = 0; kind < 2; kind++) {
+                    unsigned char *bytes = caches[kind].contents;
+                    for (size_t i = 0; i < caches[kind].length; i++) {
+                        unsigned char expected = i >= 4350 * token_bytes &&
+                            i < 4352 * token_bytes ? (kind ? 0x40 : 0x20) + branch : 0x5a;
+                        CHECK(bytes[i] == expected);
+                    }
+                }
+            }
+            calls = synthetic->calls;
+            CHECK(lunelette_metal_decode(&context, 0, &logits, error, sizeof error));
+            CHECK(synthetic->calls == calls && owner->length == 4352 && owner->valid);
+        }
+        CHECK(!lunelette_metal_checkpoint_restore(&context, checkpoint, &logits,
+            error, sizeof error));
+        CHECK(owner->length == 4350 && logits[0] == 0);
+        lunelette_metal_checkpoint_destroy(checkpoint);
+        CHECK(!lunelette_metal_append(&context, ids, 2, &logits, error, sizeof error));
+        CHECK(!lunelette_metal_checkpoint_create(&context, &checkpoint, error, sizeof error));
+        CHECK(!lunelette_metal_checkpoint_restore(&context, checkpoint, &logits,
+            error, sizeof error));
+        CHECK(owner->length == 4352);
+        lunelette_metal_checkpoint_destroy(checkpoint);
+        owner->length = 4353;
+        owner->endpoint_logits_valid = true;
+        CHECK(lunelette_metal_checkpoint_create(&context, &checkpoint, error, sizeof error));
+    }
+    owner->queue = real_queue;
+    owner->limits = (lunelette_metal_limits){256, 256};
+    CHECK(!lunelette_metal_reset(&context, error, sizeof error));
+    puts("Long C4352/B128,B256 absolute positions/checkpoint/KV guard rows PASS (compute mocked; real GPU blits)");
+}
+
 int main(void)
 {
     @autoreleasepool {
@@ -883,6 +1140,9 @@ int main(void)
         test_attention(owner);
         test_rope(owner);
         test_state(owner);
+        test_long_allocation();
+        test_long_state(owner);
+        test_long_causal(owner);
         puts("Metal synthetic kernels/state passed (not full-model validation)");
     }
     return 0;

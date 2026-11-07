@@ -69,7 +69,7 @@ def runner_faults(directory):
                 patch.object(real_workload, "run", return_value={"protocol_success": True}):
             output.mkdir()
             launch.return_value.close.return_value = True
-            launch.return_value.info = {"execution_strategy": expected}
+            launch.return_value.info = {"execution_strategy": expected, "context_capacity": 256, "prefill_chunk_size": 256}
             check(real_workload.main() == 0)
             keywords = launch.call_args.kwargs
             check(keywords["expected_strategy"] == expected)
@@ -84,7 +84,7 @@ def runner_faults(directory):
             "--native-strategy", "compact-fp8-arithmetic"]), \
             patch.object(real_workload, "run", side_effect=RuntimeError("scenario failure")), \
             contextlib.redirect_stderr(io.StringIO()):
-        launch.return_value.info = {"execution_strategy": "compact-fp8-arithmetic"}
+        launch.return_value.info = {"execution_strategy": "compact-fp8-arithmetic", "context_capacity": 256, "prefill_chunk_size": 256}
         launch.return_value.close.return_value = True
         check(real_workload.main() == 1)
         launch.return_value.close.assert_called_once()
@@ -414,8 +414,8 @@ def main():
             status, retained = service.request("GET", "/requests/first")
             check(retained["operation"] == "generate")
             check(retained["cache_restored"] is False)
-            check(retained["metrics"]["metrics_version"] == 2)
-            check(retained["metrics"]["work_version"] == 1)
+            check(retained["metrics"]["metrics_version"] == 3)
+            check(retained["metrics"]["work_version"] == 2)
             check(status == 200 and first["metrics"] == retained["metrics"])
             check(first["metrics"]["test_only"] is True)
             check(first["metrics"]["process_phys_footprint_before_bytes"] is None)

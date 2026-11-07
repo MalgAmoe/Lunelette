@@ -27,7 +27,7 @@ MPSMatrixMultiplication *lunelette_metal_mps_kernel(id<MTLDevice> device,
     size_t count, size_t rows, size_t columns)
 {
     if (!device || !MPSSupportsMTLDevice(device) || !count ||
-        count > LUNELETTE_CONTEXT_LIMIT || !rows ||
+        count > LUNELETTE_BLOCK_LIMIT || !rows ||
         rows > LUNELETTE_MODEL_INNER || !columns || columns > LUNELETTE_MODEL_INNER) {
         return nil;
     }
@@ -40,12 +40,12 @@ int lunelette_metal_mps_prepare(LuneletteMetalOwner *owner, size_t count,
     char *error, size_t capacity)
 {
     LuneletteMPSCache *old = owner->mps_cache;
-    if (old && old->count == count) {
-        return 0;
-    }
-    if (!owner->device || count < 2 || count > LUNELETTE_CONTEXT_LIMIT) {
+    if (!owner->device || count < 2 || count > owner->limits.block) {
         snprintf(error, capacity, "MPS invalid device/prefill shape; reset required");
         return -1;
+    }
+    if (old && old->count == count) {
+        return 0;
     }
     const size_t slots[7] = {1, 2, 3, 4, 6, 7, 8};
     const int input[7] = {METAL_INPUT_NORM, METAL_INPUT_NORM, METAL_INPUT_NORM,

@@ -21,7 +21,7 @@ def strict_object(pairs):
     return result
 
 
-def load_scenario(path):
+def load_scenario(path, context=256):
     value = json.loads(Path(path).read_text(), object_pairs_hook=strict_object)
     if set(value) != {"version", "mode", "operations"} or type(value["version"]) is not int or value["version"] != 1:
         raise ValueError("expected version 1 scenario schema")
@@ -53,7 +53,7 @@ def load_scenario(path):
             raise ValueError("invalid budget")
         if "id" in op and (not isinstance(op["id"], str) or not 1 <= len(op["id"]) <= 64):
             raise ValueError("invalid id")
-        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > (4096 if value["mode"] == "free_greedy" else 256)):
+        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > ((32768 if context == 4352 else 4096) if value["mode"] == "free_greedy" else 256)):
             raise ValueError("invalid content")
     return value
 
@@ -373,15 +373,19 @@ def main():
     parser.add_argument("--native-strategy", choices=["resident-fp32", "compact-fp8-arithmetic"],
                         help="native storage strategy (default: resident-fp32); requires model/tokenizer")
     parser.add_argument("--request-seconds", type=float, default=120)
+    parser.add_argument("--native-context", type=int, choices=[256, 4352], default=256)
+    parser.add_argument("--native-chunk", type=int, choices=[128, 256], default=256)
     args = parser.parse_args()
     try:
-        scenario = load_scenario(args.scenario)
+        scenario = load_scenario(args.scenario, args.native_context)
+        if args.native_context == 256 and args.native_chunk != 256:
+            raise ValueError("context256 requires chunk256")
         native_args = None
         if args.native_model or args.native_tokenizer or args.native_strategy:
             if not args.native_model or not args.native_tokenizer:
                 raise ValueError("native model and tokenizer both required")
             native_args = ["--model", args.native_model, "--tokenizer", args.native_tokenizer,
-                           "--strategy", args.native_strategy or "resident-fp32", "--context", "256", "--prefill-chunk", "256",
+                           "--strategy", args.native_strategy or "resident-fp32", "--context", str(args.native_context), "--prefill-chunk", str(args.native_chunk),
                            "--prefill", args.native_prefill]
         if (scenario["mode"] == "free_greedy") != (native_args is not None):
             raise ValueError("scenario mode must match explicit native/test launch")
@@ -393,6 +397,11 @@ def main():
                               expected_strategy=args.native_strategy or "resident-fp32")
     except Exception as error:
         print(f"real-workload: {error}", file=sys.stderr)
+        return 1
+    if native_args is not None and (service.info.get("context_capacity") != args.native_context or
+                                    service.info.get("prefill_chunk_size") != args.native_chunk):
+        service.close()
+        print("real-workload: native limits differ from requested profile", file=sys.stderr)
         return 1
     exit_status = 0
     result = {"protocol_success": False, "task_success": None}

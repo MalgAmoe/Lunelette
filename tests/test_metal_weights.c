@@ -157,6 +157,18 @@ int main(int argc, char **argv)
     CHECK(memory.weight_bytes + memory.conversion_stage_bytes == 4750700544ULL);
     CHECK(memory.scratch_bytes == 87819264 && memory.kv_bytes == 54525952);
     CHECK(memory.total_bytes == 4893045760ULL);
+    for (size_t block = 128; block <= 256; block *= 2) {
+        for (int strategy = 0; strategy <= 1; strategy++) {
+            CHECK(!lunelette_metal_weights_account_configured(&weights, strategy,
+                (lunelette_metal_limits){4352, block}, &memory));
+            CHECK(memory.scratch_bytes == (block == 128 ? 111280640 : 222036992));
+            CHECK(memory.kv_bytes == 926941184);
+            CHECK(memory.total_bytes == memory.weight_bytes + memory.conversion_stage_bytes +
+                memory.scratch_bytes + memory.kv_bytes);
+        }
+    }
+    CHECK(lunelette_metal_weights_account_configured(&weights, 0,
+        (lunelette_metal_limits){4352, 64}, &memory));
     CHECK(lunelette_metal_weights_account(&weights, (lunelette_metal_strategy)99, &memory));
     size_t saved_elements = weights.weights[3].elements;
     weights.weights[3].elements = SIZE_MAX;

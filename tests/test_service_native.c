@@ -10,8 +10,8 @@
 /* CPU-only adapter contract test. Link-time runtime stubs, never production.
  * argv[1] is a tokenizer, NOT weights; create does not open a checkpoint. */
 struct lunelette_metal {
-    int64_t ids[256];
-    unsigned count;
+    int64_t ids[4352];
+    unsigned count, capacity, block;
     lunelette_metal_checkpoint *active;
     lunelette_metal_strategy strategy;
 };
@@ -30,6 +30,17 @@ lunelette_metal *lunelette_metal_create_with_options(const char *path,
     lunelette_metal *runtime = calloc(1, sizeof(lunelette_metal));
     CHECK(runtime);
     runtime->strategy = wrong_strategy ? LUNELETTE_METAL_RESIDENT_FP32 : options->strategy;
+    return runtime;
+}
+lunelette_metal *lunelette_metal_create_configured(const char *path,
+    const lunelette_metal_options *options, const lunelette_metal_limits *limits,
+    char *error, size_t capacity)
+{
+    CHECK(limits && (limits->context == 256 || limits->context == 4352));
+    CHECK(limits->block == 256 || (limits->context == 4352 && limits->block == 128));
+    lunelette_metal *runtime = lunelette_metal_create_with_options(path, options, error, capacity);
+    runtime->capacity = (unsigned)limits->context;
+    runtime->block = (unsigned)limits->block;
     return runtime;
 }
 int lunelette_metal_get_memory(const lunelette_metal *runtime, lunelette_metal_memory *memory)
@@ -74,7 +85,7 @@ static int result(const float **out, char *error, size_t capacity)
 int lunelette_metal_prefill(lunelette_metal *runtime, const int64_t *ids, size_t count,
                            const float **out, char *error, size_t capacity)
 {
-    CHECK(!runtime->count && count && count <= 256);
+    CHECK(!runtime->count && count && count <= runtime->block);
     memcpy(runtime->ids, ids, count * sizeof(*ids));
     runtime->count = (unsigned)count;
     prefills++;
@@ -87,7 +98,7 @@ int lunelette_metal_prefill(lunelette_metal *runtime, const int64_t *ids, size_t
 int lunelette_metal_decode(lunelette_metal *runtime, int64_t token,
                           const float **out, char *error, size_t capacity)
 {
-    CHECK(runtime->count && runtime->count < 256);
+    CHECK(runtime->count && runtime->count < runtime->capacity);
     runtime->ids[runtime->count++] = token;
     decodes++;
     int status = result(out, error, capacity);
@@ -99,7 +110,7 @@ int lunelette_metal_decode(lunelette_metal *runtime, int64_t token,
 struct lunelette_metal_checkpoint {
     lunelette_metal *owner;
     unsigned count;
-    int64_t ids[256];
+    int64_t ids[4352];
     float *saved;
 };
 static unsigned appends, snapshots, restores;
@@ -107,7 +118,7 @@ static int fail_snapshot;
 int lunelette_metal_append(lunelette_metal *runtime, const int64_t *ids, size_t count,
                           const float **out, char *error, size_t capacity)
 {
-    CHECK(runtime->count && count && runtime->count + count <= 256);
+    CHECK(runtime->count && count && runtime->count + count <= runtime->capacity && count <= runtime->block);
     memcpy(runtime->ids + runtime->count, ids, count * sizeof(*ids));
     runtime->count += (unsigned)count;
     appends++;
@@ -171,7 +182,7 @@ void lunelette_metal_checkpoint_destroy(lunelette_metal_checkpoint *c)
 
 static void handle_test(void)
 {
-    lunelette_metal runtime = {0};
+    lunelette_metal runtime = {.capacity = 256, .block = 256};
     const int64_t ids[] = {42, 43};
     const float *out;
     char error[128];

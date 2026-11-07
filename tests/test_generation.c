@@ -20,7 +20,7 @@ static int next(void *opaque, const int64_t *ids, size_t count, float *logits,
     (void)error;
     (void)capacity;
     CHECK(count == fake->initial + fake->calls);
-    CHECK(count <= 256);
+    CHECK(count <= 4352);
     if (fake->calls) {
         CHECK(ids[count - 1] == 42);
     }
@@ -111,6 +111,42 @@ int main(void)
     CHECK(lunelette_generate_with_logits(next, &fake, NULL, 1, &config, &result, NULL, 0) == -1);
     CHECK(lunelette_generate_with_logits(next, &fake, ids, 1, NULL, &result, NULL, 0) == -1);
     CHECK(lunelette_generate_with_logits(next, &fake, ids, 1, &config, NULL, NULL, 0) == -1);
+    int64_t long_ids[4352] = {0};
+    config = (lunelette_generation_config)LUNELETTE_GENERATION_DEFAULT;
+#define LONG(n, c) lunelette_generate_with_logits_capacity(next, &fake, long_ids, n, c, &config, &result, error, sizeof error)
+    config.max_new_tokens = 256;
+    fake = (struct fake){0, 4096, 0};
+    CHECK(!LONG(4096, 4352));
+    CHECK(result.count == 256 && fake.calls == 256 && result.stop == LUNELETTE_STOP_LIMIT);
+    config.max_new_tokens = 3;
+    fake = (struct fake){0, 4351, 0};
+    CHECK(!LONG(4351, 4352) && result.count == 1 && result.stop == LUNELETTE_STOP_CONTEXT);
+    fake = (struct fake){0, 4350, 2};
+    CHECK(!LONG(4350, 4352) && result.count == 2 && result.stop == LUNELETTE_STOP_EOS);
+    fake = (struct fake){0, 4352, 0};
+    CHECK(!LONG(4352, 4352) && !fake.calls && result.stop == LUNELETTE_STOP_CONTEXT);
+    config.max_new_tokens = 0;
+    CHECK(!LONG(4352, 4352) && result.stop == LUNELETTE_STOP_LIMIT);
+    long_ids[4351] = -1;
+    result = sentinel;
+    CHECK(LONG(4352, 4352) == -1 && !memcmp(&result, &sentinel, sizeof result));
+    long_ids[4351] = 0;
+    CHECK(LONG(4353, 4352) == -1);
+    CHECK(LONG(SIZE_MAX, 4352) == -1);
+    CHECK(LONG(1, SIZE_MAX) == -1);
+    CHECK(LONG(1, 257) == -1);
+    CHECK(LONG(257, 256) == -1);
+    config.max_new_tokens = 257;
+    CHECK(LONG(1, 4352) == -1);
+    config.max_new_tokens = 3;
+    for (int mode = 1; mode <= 5; mode++) {
+        if (mode == 2) {
+            continue;
+        }
+        fake = (struct fake){0, 4096, mode};
+        result = sentinel;
+        CHECK(LONG(4096, 4352) == -1 && !memcmp(&result, &sentinel, sizeof result));
+    }
     puts("generation: EOS, limits 256/257, ties, finite logits, atomic errors PASS");
     return 0;
 }

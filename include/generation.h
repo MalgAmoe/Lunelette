@@ -23,7 +23,7 @@ typedef enum {
 } lunelette_stop_reason;
 
 typedef struct {
-    int64_t tokens[LUNELETTE_CONTEXT_LIMIT]; /* New tokens only; includes generated EOS. */
+    int64_t tokens[LUNELETTE_GENERATION_LIMIT]; /* New tokens only; includes generated EOS. */
     size_t count;
     lunelette_stop_reason stop;
 } lunelette_generation_result;
@@ -51,5 +51,14 @@ typedef int (*lunelette_logits_fn)(void *context, const int64_t *ids, size_t cou
 int lunelette_generate_with_logits(lunelette_logits_fn next, void *context,
     const int64_t *prompt, size_t count, const lunelette_generation_config *config,
     lunelette_generation_result *result, char *error, size_t capacity);
+
+/* Capacity-aware variant: context_limit is exactly 256 or 4352; prompt length
+ * 1..context_limit. Budget/result remain bounded to 256 new tokens. Same stop,
+ * validation and atomic-result contracts as above. Prefix scratch is owned and
+ * freed internally on every path; callbacks still borrow the entire prefix. */
+int lunelette_generate_with_logits_capacity(lunelette_logits_fn next, void *context,
+    const int64_t *prompt, size_t count, size_t context_limit,
+    const lunelette_generation_config *config, lunelette_generation_result *result,
+    char *error, size_t capacity);
 
 #endif

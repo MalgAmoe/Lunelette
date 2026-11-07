@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #define LUNELETTE_TOKENIZER_MAX_INPUT 4096u
+#define LUNELETTE_TOKENIZER_LONG_INPUT 32768u
 #define LUNELETTE_TOKENIZER_VOCAB_SIZE 131072u
 #define LUNELETTE_TOKENIZER_SPECIAL_COUNT 1000u
 
@@ -37,6 +38,13 @@ int lunelette_tokenizer_encode(const lunelette_tokenizer *tokenizer,
                                const unsigned char *text, size_t length,
                                uint32_t **ids, size_t *count,
                                char *error, size_t error_size);
+
+/* Explicit byte admission: input_limit must be MAX_INPUT or LONG_INPUT.
+ * Same encode semantics and ownership; long character workspace is per-call heap.
+ * Decode limits are unchanged. No token-count truncation is performed. */
+int lunelette_tokenizer_encode_with_limit(const lunelette_tokenizer *tokenizer,
+    const unsigned char *text, size_t length, size_t input_limit,
+    uint32_t **ids, size_t *count, char *error, size_t error_size);
 
 /* Lossless raw bytes (NOT necessarily UTF-8), concatenated across token boundaries.
  * Special IDs 0..999 are rejected, never silently skipped/rendered. Caller handles

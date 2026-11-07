@@ -6,6 +6,7 @@
 #include "metal.h"
 #include "metal_weights.h"
 #include "runtime_limits.h"
+#include "metal_plan.h"
 #include <stdbool.h>
 
 _Static_assert(LUNELETTE_MODEL_HIDDEN == 3072 && LUNELETTE_MODEL_QUERY == 4096 &&
@@ -39,6 +40,7 @@ enum { METAL_X, METAL_INPUT_NORM, METAL_Q, METAL_K, METAL_V, METAL_ROTATED_Q,
     float scales[LUNELETTE_METAL_WEIGHT_COUNT];
     id<MTLBuffer> conversion_stage; /* Stable, sole GPU-written staging allocation. */
     LuneletteMPSCache *mps_cache; /* Current shape only; cache never retains this owner. */
+    lunelette_metal_limits limits; /* Immutable after construction. */
     size_t length;
     bool valid;
     bool endpoint_logits_valid;
@@ -52,6 +54,8 @@ struct lunelette_metal {
     void *owner;
 };
 
+/* Private allocation seam: failure leaves only unpublished owner-owned buffers. */
+int lunelette_metal_allocate_buffers(LuneletteMetalOwner *owner, char *error, size_t capacity);
 int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, size_t capacity);
 int lunelette_metal_encode_operator(LuneletteMetalOwner *owner, id<MTLCommandBuffer> command,
     int operation, id<MTLBuffer> first, id<MTLBuffer> second, id<MTLBuffer> output,

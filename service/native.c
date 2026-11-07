@@ -15,9 +15,11 @@
 typedef struct {
     lunelette_metal *runtime;
     lunelette_tokenizer *tokenizer;
-    unsigned prefix[256], length, emitted, loads;
+    unsigned prefix[SERVICE_CONTEXT_MAX], length, emitted, loads;
+    unsigned capacity, block, target, pending_position, recompute_length, recompute_hint;
+    int ingesting, rebuilding;
     int pending, boundary;
-    unsigned policy, saved_length, saved_prefix[256];
+    unsigned policy, saved_length, saved_prefix[SERVICE_CONTEXT_MAX];
     lunelette_metal_checkpoint *checkpoint;
     service_work work;
     const float *logits;
@@ -59,6 +61,8 @@ static void native_invalidate(void *context)
     lunelette_metal_checkpoint_destroy(n->checkpoint);
     n->checkpoint = NULL;
     n->saved_length = 0;
+    n->recompute_hint = 0;
+    n->ingesting = 0;
     n->logits = NULL;
     n->pending = 0;
     n->emitted = 0;
@@ -85,6 +89,7 @@ static void native_reset(void *context)
     n->logits = NULL;
     n->length = 0;
     n->boundary = 0;
+    n->ingesting = 0;
     n->emitted = 0;
     n->pending = 0;
     if (lunelette_metal_reset(n->runtime, error, sizeof(error))) {
@@ -105,7 +110,8 @@ static int native_frame(void *context, const unsigned char *text, size_t length,
                         int initial, unsigned *output, unsigned *capacity)
 {
     native_service *n = context;
-    return service_frame(n->tokenizer, text, length, initial, output, capacity);
+    return service_frame_with_limit(n->tokenizer, text, length,
+        n->capacity > 256 ? 32768 : 4096, initial, output, capacity);
 }
 
 static int native_piece(void *context, unsigned id, unsigned char *output, size_t *capacity)
@@ -133,65 +139,104 @@ static int native_materialize(void *context, const unsigned *tokens, unsigned le
     native_service *n = context;
     char error[512];
     memset(&n->work, 0, sizeof(n->work));
-    if (!length || length > 256 || length < n->length ||
+    if (!length || length > n->capacity || length < n->length ||
         memcmp(n->prefix, tokens, n->length * sizeof(*tokens))) {
         return 0;
     }
-    if (n->pending && (length <= n->length || tokens[n->length] != n->emitted)) {
+    if (!n->ingesting && n->pending && (length <= n->length || tokens[n->length] != n->emitted)) {
         return 0;
     }
-    if (length == n->length && !(n->policy == 2 && n->boundary)) {
+    if (!n->ingesting && length == n->length && !(n->policy == 2 && n->boundary)) {
         n->boundary = 0;
         n->work.reused = length;
         return n->logits != NULL;
     }
     int status;
     unsigned old_length = n->length;
-    int rebuild = !old_length || (n->policy == 2 && n->boundary) ||
-        (!n->policy && !(n->pending && length == old_length + 1 && n->emitted != 2));
-    n->boundary = 0;
-    int64_t ids[256];
-    for (unsigned i = 0; i < length; i++) {
-        ids[i] = tokens[i];
-    }
-    n->work.reused = rebuild ? 0 : old_length;
-    if (rebuild) {
-        n->logits = NULL;
-        /* Internal recompute invalidates KV, but controller keeps its recipe. */
-        status = lunelette_metal_reset(n->runtime, error, sizeof(error));
-        if (!status) {
-            n->work.pending_attempted = n->pending ? 1 : 0;
-            n->work.full_attempted = length;
-            n->work.prefill_calls = 1;
-            status = lunelette_metal_prefill(n->runtime, ids, length, &n->logits,
-                                             error, sizeof(error));
+    if (!n->ingesting) {
+        n->rebuilding = !old_length || (n->policy == 2 && n->boundary) ||
+            (!n->policy && !(n->pending && length == old_length + 1 && n->emitted != 2));
+        n->target = length;
+        n->pending_position = old_length;
+        n->recompute_length = n->rebuilding ? old_length : 0;
+        if (n->recompute_hint > n->recompute_length) {
+            n->recompute_length = n->recompute_hint;
         }
-    } else if (n->pending && length == old_length + 1) {
-        n->work.pending_attempted = 1;
+        n->recompute_hint = 0;
+        n->boundary = 0;
+        n->work.reused = n->rebuilding ? 0 : old_length;
+        if (n->rebuilding) {
+            n->logits = NULL;
+            if (lunelette_metal_reset(n->runtime, error, sizeof(error))) {
+                return 0;
+            }
+            n->length = 0;
+        }
+        n->ingesting = 1;
+    } else if (n->target != length) {
+        return 0;
+    }
+    unsigned count = length - n->length;
+    if (count > n->block) {
+        count = n->block;
+    }
+    int64_t ids[256];
+    for (unsigned i = 0; i < count; i++) {
+        ids[i] = tokens[n->length + i];
+    }
+    n->work.pending_attempted = n->pending && n->pending_position >= n->length &&
+        n->pending_position < n->length + count;
+    if (!n->length) {
+        n->work.full_attempted = count;
+        n->work.prefill_calls = 1;
+        status = lunelette_metal_prefill(n->runtime, ids, count, &n->logits,
+                                         error, sizeof(error));
+    } else if (!n->rebuilding && n->pending && count == 1 && length == old_length + 1) {
         n->work.decode_calls = 1;
         n->work.decode_attempted = 1;
         status = lunelette_metal_decode(n->runtime, n->emitted, &n->logits,
                                         error, sizeof(error));
     } else {
-        n->work.pending_attempted = n->pending ? 1 : 0;
-        n->work.suffix_attempted = length - old_length;
+        n->work.suffix_attempted = count;
         n->work.append_calls = 1;
-        status = lunelette_metal_append(n->runtime, ids + old_length, length - old_length,
-                                        &n->logits, error, sizeof(error));
+        status = lunelette_metal_append(n->runtime, ids, count, &n->logits,
+                                        error, sizeof(error));
+    }
+    if (n->length < n->recompute_length) {
+        unsigned repeated = n->recompute_length - n->length;
+        n->work.recompute_attempted = repeated < count ? repeated : count;
     }
     if (status) {
         fprintf(stderr, "materialize: %s\n", error);
+        n->ingesting = 0;
         n->logits = NULL;
         return 0;
     }
+    n->work.recompute_committed = n->work.recompute_attempted;
     n->work.full_committed = n->work.full_attempted;
     n->work.suffix_committed = n->work.suffix_attempted;
     n->work.pending_committed = n->work.pending_attempted;
     n->work.decode_committed = n->work.decode_attempted;
-    memcpy(n->prefix, tokens, length * sizeof(*tokens));
-    n->length = length;
+    n->length += count;
+    memcpy(n->prefix, tokens, n->length * sizeof(*tokens));
+    if (n->work.pending_committed) {
+        n->pending = 0;
+    }
+    if (n->length != length) {
+        return SERVICE_MATERIALIZE_MORE;
+    }
+    n->ingesting = 0;
     n->pending = 0;
     return 1;
+}
+
+static int native_materialize_step(void *context, const unsigned *tokens,
+                                   unsigned length, unsigned *cursor)
+{
+    native_service *n = context;
+    int result = native_materialize(context, tokens, length);
+    *cursor = n->length;
+    return result;
 }
 
 static int native_save(void *context)
@@ -232,8 +277,10 @@ static int native_restore(void *context)
         n->pending = 0;
         n->emitted = 0;
         n->boundary = 0;
+        n->ingesting = 0;
         memset(n->prefix, 0, sizeof(n->prefix));
         n->length = 0;
+        n->recompute_hint = n->saved_length;
         return lunelette_metal_reset(n->runtime, error, sizeof(error)) ? -1 : 1;
     }
     const float *restored = NULL;
@@ -247,6 +294,7 @@ static int native_restore(void *context)
     n->pending = 0;
     n->emitted = 0;
     n->boundary = 0;
+    n->ingesting = 0;
     n->work.logit_restores = 1;
     return 1;
 }
@@ -269,7 +317,7 @@ static int copy_logits(void *context, const int64_t *ids, size_t count,
 static int native_next(void *context)
 {
     native_service *n = context;
-    int64_t ids[256];
+    int64_t ids[SERVICE_CONTEXT_MAX];
     for (unsigned i = 0; i < n->length; i++) {
         ids[i] = n->prefix[i];
     }
@@ -279,7 +327,7 @@ static int native_next(void *context)
     if (n->pending) {
         return -1;
     }
-    if (lunelette_generate_with_logits(copy_logits, n, ids, n->length,
+    if (lunelette_generate_with_logits_capacity(copy_logits, n, ids, n->length, n->capacity,
                                        &config, &result, error, sizeof(error))) {
         fprintf(stderr, "generate: %s\n", error);
         return -1;
@@ -310,10 +358,10 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         } else if (!strcmp(key, "--strategy") && !strategy_name &&
                    (!strcmp(value, "resident-fp32") || !strcmp(value, "compact-fp8-arithmetic"))) {
             strategy_name = value;
-        } else if (!strcmp(key, "--context") && !context && !strcmp(value, "256")) {
-            context = 1;
-        } else if (!strcmp(key, "--prefill-chunk") && !chunk && !strcmp(value, "256")) {
-            chunk = 1;
+        } else if (!strcmp(key, "--context") && !context && (!strcmp(value, "256") || !strcmp(value, "4352"))) {
+            context = atoi(value);
+        } else if (!strcmp(key, "--prefill-chunk") && !chunk && (!strcmp(value, "256") || !strcmp(value, "128"))) {
+            chunk = atoi(value);
         } else if (!strcmp(key, "--prefill") && !prefill &&
                    (!strcmp(value, "mps") || !strcmp(value, "custom"))) {
             prefill = value;
@@ -335,14 +383,26 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             return 0;
         }
     }
-    if (!model || !tokenizer || !strategy_name || !context || !chunk || !prefill || !port_seen) {
+    if (!model || !tokenizer || !strategy_name || !prefill || !port_seen) {
         return 0;
+    }
+    if (!context) {
+        context = 256;
+    }
+    if (!chunk) {
+        chunk = 256;
     }
     native_service *n = calloc(1, sizeof(*n));
     if (!n) {
         return 0;
     }
     n->policy = policy;
+    n->capacity = (unsigned)context;
+    n->block = (unsigned)chunk;
+    if (context == 256 && chunk != 256) {
+        free(n);
+        return 0;
+    }
     char error[512], model_hash[65], tokenizer_hash[65];
     double start = seconds();
     if (!hash_file(model, model_hash) || !hash_file(tokenizer, tokenizer_hash)) {
@@ -360,7 +420,8 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         !strcmp(strategy_name, "resident-fp32") ? LUNELETTE_METAL_RESIDENT_FP32 :
             LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC
     };
-    n->runtime = lunelette_metal_create_with_options(model, &options, error, sizeof(error));
+    lunelette_metal_limits limits = {(size_t)context, (size_t)chunk};
+    n->runtime = lunelette_metal_create_configured(model, &options, &limits, error, sizeof(error));
     if (!n->runtime) {
         fprintf(stderr, "load: %s\n", error);
         lunelette_tokenizer_close(n->tokenizer);
@@ -386,7 +447,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         "\"precision_policy\":\"%s; FP32 activations norms embedding head KV; %s\","
         "\"single_token_block_kernel\":\"%s\",\"head_kernel\":\"precise-FP32\","
         "\"multi_token_block_kernel\":\"%s\","
-        "\"context_capacity\":256,\"prefill_chunk_size\":256,\"event_bytes\":8192,"
+        "\"context_capacity\":%u,\"prefill_chunk_size\":%u,\"event_bytes\":8192,"
+        "\"long_context_validation\":\"%s\","
+        "\"long_context_validation_document\":\"docs/real-workload-m6.md\","
         "\"conversation_protocol\":\"native-no-system-nonthinking-text-v1\","
         "\"checkpoint_payload_bytes_per_handle\":524288,\"checkpoint_transient_payload_bound_bytes\":1048576,"
         "\"tools\":false,\"checkpoints\":%s,\"reuse_new_turn\":%s,\"prefix_reuse\":\"%s\","
@@ -410,6 +473,8 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         memory.strategy ? (options.prefill == LUNELETTE_METAL_PREFILL_MPS ?
             "FP8-convert-stage-then-MPS" : "FP8-convert-stage-then-precise-FP32") :
             (options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS" : "precise-FP32"),
+        n->capacity, n->block,
+        n->capacity > 256 ? "external_evidence_only" : "not_applicable",
         policy ? "true" : "false", policy == 1 ? "true" : "false",
         policy == 1 ? "on" : policy == 2 ? "off" : "legacy",
         policy ? "external_evidence_only" : "not_applicable",
@@ -423,9 +488,14 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         native_destroy(n);
         return 0;
     }
-    *generator = (service_generator){n, native_next, native_materialize, native_reset,
-                                    native_destroy, native_frame, native_piece, 2, n->info,
-                                    policy, native_begin, native_save, native_restore,
-                                    native_invalidate, native_work};
+    *generator = (service_generator){
+        .context = n, .next = native_next, .materialize = native_materialize,
+        .reset = native_reset, .destroy = native_destroy, .frame = native_frame,
+        .piece = native_piece, .eos = 2, .info = n->info, .prefix_reuse = policy,
+        .begin = native_begin, .save = native_save, .restore = native_restore,
+        .invalidate = native_invalidate, .work = native_work,
+        .context_capacity = n->capacity, .block_capacity = n->block,
+        .materialize_step = native_materialize_step
+    };
     return 1;
 }

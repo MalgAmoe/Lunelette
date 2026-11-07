@@ -85,7 +85,7 @@ static int string(tj_document *d, unsigned index)
     size_t start = ++d->position;
     size_t out = start;
     while (d->position < d->length) {
-        if (out - start > 4096) {
+        if (out - start > d->string_limit) {
             return 0;
         }
         unsigned c = d->data[d->position++];
@@ -167,14 +167,14 @@ static unsigned parse(tj_document *d, unsigned depth)
 {
     unsigned index;
     char c;
-    if (depth > 32 || d->count == TJ_MAX_NODES) {
+    if (depth > d->depth_limit || d->count == d->node_limit) {
         return 0;
     }
     if (d->count >= d->capacity) {
         unsigned capacity = d->capacity ? d->capacity * 2 : 1024;
         tj_node *nodes;
-        if (capacity > TJ_MAX_NODES) {
-            capacity = TJ_MAX_NODES;
+        if (capacity > d->node_limit) {
+            capacity = d->node_limit;
         }
         nodes = realloc(d->nodes, capacity * sizeof(*nodes));
         if (!nodes) {
@@ -313,6 +313,9 @@ int tj_read(const char *path, tj_document *d)
     FILE *file;
     long length;
     memset(d, 0, sizeof(*d));
+    d->string_limit = 4096;
+    d->node_limit = TJ_MAX_NODES;
+    d->depth_limit = 32;
     file = fopen(path, "rb");
     if (!file) {
         return 0;
@@ -350,10 +353,21 @@ int tj_read(const char *path, tj_document *d)
 
 int tj_read_memory(const void *data, size_t length, tj_document *d)
 {
+    return tj_read_memory_limits(data, length, d, 8192, 4096, TJ_MAX_NODES, 32);
+}
+
+int tj_read_memory_limits(const void *data, size_t length, tj_document *d,
+                          size_t body_limit, size_t string_limit,
+                          unsigned node_limit, unsigned depth_limit)
+{
     memset(d, 0, sizeof(*d));
-    if (length > 8192) {
+    if (!data || length > body_limit || length == (size_t)-1 ||
+        !string_limit || node_limit < 2 || node_limit > TJ_MAX_NODES || depth_limit > 32) {
         return 0;
     }
+    d->string_limit = string_limit;
+    d->node_limit = node_limit;
+    d->depth_limit = depth_limit;
     d->data = malloc(length + 1);
     if (!d->data) {
         return 0;

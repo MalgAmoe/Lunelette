@@ -1,3 +1,4 @@
+#include "metal_plan.h"
 #include "metal_weights.h"
 #include <stdio.h>
 #include <stdbool.h>
@@ -232,7 +233,17 @@ failure:
 int lunelette_metal_weights_account(const lunelette_metal_weights *weights,
     lunelette_metal_strategy strategy, lunelette_metal_memory *memory)
 {
-    if (!weights || !memory || (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
+    return lunelette_metal_weights_account_configured(weights, strategy,
+        (lunelette_metal_limits){256, 256}, memory);
+}
+
+int lunelette_metal_weights_account_configured(const lunelette_metal_weights *weights,
+    lunelette_metal_strategy strategy, lunelette_metal_limits limits,
+    lunelette_metal_memory *memory)
+{
+    metal_allocation_plan plan;
+    if (metal_plan_create(limits, &plan) || !weights || !memory ||
+        (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
             strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC)) {
         return -1;
     }
@@ -256,8 +267,8 @@ int lunelette_metal_weights_account(const lunelette_metal_weights *weights,
             result.conversion_stage_bytes = count * sizeof(float);
         }
     }
-    result.scratch_bytes = 87819264;
-    result.kv_bytes = 54525952;
+    result.scratch_bytes = plan.scratch_bytes;
+    result.kv_bytes = plan.kv_bytes;
     uint64_t extras = result.conversion_stage_bytes + result.scratch_bytes + result.kv_bytes;
     if (extras < result.conversion_stage_bytes || result.weight_bytes > UINT64_MAX - extras) {
         return -1;

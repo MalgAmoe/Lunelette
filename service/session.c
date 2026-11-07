@@ -53,9 +53,11 @@ static int equals(const tj_node *n, const char *text)
     return n->length == strlen(text) && !memcmp(n->text, text, n->length);
 }
 
-int service_json(const void *body, size_t length, const char *fields, tj_document *d)
+static int service_json_profile(const void *body, size_t length, const char *fields,
+                                tj_document *d, int extended)
 {
-    if (!tj_read_memory(body, length, d)) {
+    if (!tj_read_memory_limits(body, length, d, extended ? 262144 : 8192,
+                               extended ? 32768 : 4096, 64, 4)) {
         return 0;
     }
     if (d->nodes[1].kind != '{') {
@@ -79,6 +81,11 @@ int service_json(const void *body, size_t length, const char *fields, tj_documen
         }
     }
     return 1;
+}
+
+int service_json(const void *body, size_t length, const char *fields, tj_document *d)
+{
+    return service_json_profile(body, length, fields, d, 0);
 }
 
 /* All append operations either fit completely or fail, without advancing past capacity. */
@@ -155,19 +162,20 @@ static int metrics(const service_request *r, int native, char *out, size_t size)
                 "\"restore_ms\":%.3f", r->materialize_ms, r->snapshot_ms, r->restore_ms)) {
         return 0;
     }
-    return append(out, size, &n, ",\"metrics_version\":2,\"suffix_us\":%llu,"
-        "\"suffix_steps\":%u,\"work_version\":1,\"work\":{"
-        "\"full_attempted\":%u,\"full_committed\":%u,"
-        "\"suffix_attempted\":%u,\"suffix_committed\":%u,"
+    return append(out, size, &n, ",\"metrics_version\":3,\"suffix_us\":%llu,"
+        "\"suffix_steps\":%u,\"work_version\":2,\"work\":{"
+        "\"prefill_attempted\":%u,\"prefill_committed\":%u,"
+        "\"append_attempted\":%u,\"append_committed\":%u,"
         "\"pending_attempted\":%u,\"pending_committed\":%u,"
         "\"prefill_calls\":%u,\"append_calls\":%u,\"decode_calls\":%u,"
-        "\"decode_attempted\":%u,\"decode_committed\":%u,\"logit_restores\":%u}}",
+        "\"decode_attempted\":%u,\"decode_committed\":%u,\"logit_restores\":%u,"
+        "\"recompute_attempted\":%u,\"recompute_committed\":%u}}",
         (unsigned long long)r->suffix_us, r->suffix_steps,
         r->work.full_attempted, r->work.full_committed,
         r->work.suffix_attempted, r->work.suffix_committed, r->work.pending_attempted,
         r->work.pending_committed, r->work.prefill_calls, r->work.append_calls,
         r->work.decode_calls, r->work.decode_attempted, r->work.decode_committed,
-        r->work.logit_restores);
+        r->work.logit_restores, r->work.recompute_attempted, r->work.recompute_committed);
 }
 
 static void event_locked(service_session *s, const char *type, const char *text,
@@ -201,15 +209,10 @@ static void event_locked(service_session *s, const char *type, const char *text,
     s->count++;
 }
 
-static int materialize(service_session *s)
-{
-    return s->generator.materialize(s->generator.context, s->tokens, s->logical);
-}
-
 static void add_work(service_work *total, const service_work *work)
 {
-    /* Context256 and at most 256 materializations bound each request's token
-     * sums by 65536 and its call counts by 256, well below unsigned capacity. */
+    /* At most 256 generation boundaries, each bounded by context4352.
+     * Token and call aggregates remain below unsigned capacity. */
     total->full_attempted += work->full_attempted;
     total->full_committed += work->full_committed;
     total->suffix_attempted += work->suffix_attempted;
@@ -222,6 +225,65 @@ static void add_work(service_work *total, const service_work *work)
     total->decode_attempted += work->decode_attempted;
     total->decode_committed += work->decode_committed;
     total->logit_restores += work->logit_restores;
+    total->recompute_attempted += work->recompute_attempted;
+    total->recompute_committed += work->recompute_committed;
+}
+
+/* Worker-owned orchestration, unlocked on entry/exit. No adapter may hide a
+ * multi-block loop. Publish progress and observe cancellation after every block,
+ * including READY, before any sample or checkpoint publication. */
+static int materialize(service_session *s, service_work *total)
+{
+    int result;
+    unsigned pending_position = s->committed;
+    unsigned previous = 0;
+    int first = 1;
+    do {
+        unsigned cursor = s->committed;
+        if (s->generator.materialize_step) {
+            result = s->generator.materialize_step(s->generator.context,
+                s->tokens, s->logical, &cursor);
+        } else {
+            result = s->generator.materialize(s->generator.context, s->tokens, s->logical);
+            if (result) {
+                cursor = s->logical;
+            }
+        }
+        service_work receipt = {0};
+        if (s->generator.work) {
+            s->generator.work(s->generator.context, &receipt);
+            if (!total->prefill_calls && !total->append_calls && !total->decode_calls) {
+                total->reused = receipt.reused;
+            }
+            add_work(total, &receipt);
+        }
+        if (result < 0 || result > SERVICE_MATERIALIZE_MORE || cursor > s->logical ||
+            (result == 1 && cursor != s->logical) ||
+            (result == SERVICE_MATERIALIZE_MORE && (!cursor || cursor >= s->logical || (!first && cursor <= previous)))) {
+            cursor = s->committed;
+            result = 0;
+        }
+        previous = cursor;
+        first = 0;
+        pthread_mutex_lock(&s->lock);
+        if (s->generator.materialize_step) {
+            s->committed = cursor;
+            if (result == 1 || cursor > pending_position) {
+                s->pending = 0;
+            }
+        }
+        int cancelled = s->cancel || s->stop;
+        pthread_mutex_unlock(&s->lock);
+        if (cancelled || !result) {
+            return 0;
+        }
+    } while (result == SERVICE_MATERIALIZE_MORE);
+    return result == 1;
+}
+
+static unsigned context_capacity(const service_session *s)
+{
+    return s->generator.context_capacity ? s->generator.context_capacity : 256;
 }
 
 /* Called with the lock held; callbacks remain worker-only and unlocked. */
@@ -241,13 +303,10 @@ static void control_job(service_session *s, service_request *r)
     s->framing_ms = 0;
     pthread_mutex_unlock(&s->lock);
     if (saving) {
-        result = materialize(s);
+        result = materialize(s, &receipt);
         materialize_ms = milliseconds() - start;
         /* Materialization may have changed KV even on failure. */
         mutated = 1;
-        if (s->generator.work) {
-            s->generator.work(s->generator.context, &receipt);
-        }
         if (result) {
             double tick = milliseconds();
             result = s->generator.save(s->generator.context);
@@ -365,13 +424,10 @@ static void *worker(void *context)
              * happen unlocked, so status/cancel remain responsive during a tick. */
             pthread_mutex_unlock(&s->lock);
             double tick = milliseconds();
-            int valid = materialize(s);
+            service_work receipt = {0};
+            int valid = materialize(s, &receipt);
             /* Quantize once; aggregates are sums of these executed-step samples. */
             uint64_t elapsed_us = (uint64_t)((milliseconds() - tick) * 1000.0);
-            service_work receipt = {0};
-            if (s->generator.work) {
-                s->generator.work(s->generator.context, &receipt);
-            }
             int token = valid ? s->generator.next(s->generator.context) : -1;
             double available = milliseconds();
             pthread_mutex_lock(&s->lock);
@@ -409,7 +465,7 @@ static void *worker(void *context)
                 break;
             }
             unsigned eos = s->generator.eos ? s->generator.eos : 256;
-            if (token < 0 || (!s->generator.piece && token > 256) || s->logical == 256) {
+            if (token < 0 || (!s->generator.piece && token > 256) || s->logical == context_capacity(s)) {
                 terminal = "error";
                 reason = "generator_failure";
                 break;
@@ -542,6 +598,12 @@ static void *worker(void *context)
 
 int service_init(service_session *s, service_generator generator)
 {
+    if ((generator.context_capacity && generator.context_capacity != 256 &&
+         generator.context_capacity != SERVICE_CONTEXT_MAX) ||
+        (generator.block_capacity && generator.block_capacity != 256 &&
+         !(generator.context_capacity == SERVICE_CONTEXT_MAX && generator.block_capacity == 128))) {
+        return 0;
+    }
     memset(s, 0, sizeof(*s));
     s->generator = generator;
     s->startup_footprint = generator.info ? service_process_footprint() : 0;
@@ -864,7 +926,7 @@ int service_route(service_session *s, const char *method, const char *path,
                          !strcmp(op, "/messages") ? "|role||content|" :
                          !strcmp(op, "/checkpoint") ? "|id|" :
                          !strcmp(op, "/restore") ? "|id||checkpoint_id|" : "";
-    if (!service_json(body, length, fields, &d)) {
+    if (!service_json_profile(body, length, fields, &d, context_capacity(s) > 256)) {
         status = 400;
         error = "invalid_json_or_fields";
         goto done;
@@ -954,7 +1016,7 @@ int service_route(service_session *s, const char *method, const char *path,
                 }
             }
         }
-        if (budget > 256 - s->logical) {
+        if (budget > context_capacity(s) - s->logical) {
             status = 422;
             error = "context_overflow";
             goto done;
@@ -965,7 +1027,8 @@ int service_route(service_session *s, const char *method, const char *path,
             goto done;
         }
         /* Reserve the bounded control envelope before admitting a job. */
-        if (control && size < 512) {
+        if ((control || s->generator.frame) &&
+            size < 512 + (s->generator.frame ? 7 * (size_t)s->logical : 0)) {
             status = 500;
             error = "reply_capacity";
             goto done;
@@ -1033,7 +1096,7 @@ int service_route(service_session *s, const char *method, const char *path,
                 error = "assistant_generation_required";
                 goto done;
             }
-            unsigned framed[256], count = 256 - s->logical;
+            unsigned framed[SERVICE_CONTEXT_MAX], count = context_capacity(s) - s->logical;
             double frame_start = milliseconds();
             if (!s->generator.frame(s->generator.context, d.nodes[content].text,
                                    d.nodes[content].length, !s->logical, framed, &count)) {
@@ -1041,12 +1104,19 @@ int service_route(service_session *s, const char *method, const char *path,
                 error = "framing_or_context_overflow";
                 goto done;
             }
+            /* IDs are at most six decimal digits; reserve the complete ledger
+             * plus the bounded snapshot envelope before changing the session. */
+            if (size < 512 + 7 * (size_t)(s->logical + count)) {
+                status = 500;
+                error = "reply_capacity";
+                goto done;
+            }
             memcpy(s->tokens + s->logical, framed, count * sizeof(*framed));
             s->logical += count;
             s->framing_ms = milliseconds() - frame_start;
             goto snapshot;
         }
-        if (d.nodes[content].length > 256 - s->logical) {
+        if (d.nodes[content].length > context_capacity(s) - s->logical) {
             status = 422;
             error = "context_overflow";
             goto done;
@@ -1064,7 +1134,7 @@ snapshot: {
                 "{\"session_id\":%u,\"state\":\"%s\",\"logical_tokens\":%u,"
                 "\"committed_tokens\":%u,\"pending_tokens\":%u,\"remaining\":%u}",
                 s->session, s->state, s->logical, s->committed,
-                s->pending, 256 - s->logical)) {
+                s->pending, context_capacity(s) - s->logical)) {
         status = 500;
         error = "reply_capacity";
         goto done;
@@ -1079,13 +1149,16 @@ snapshot: {
         }
     }
 }
-    if (s->generator.frame && !error && reply[0] && strlen(reply) + 3000 < size) {
+    if (s->generator.frame && !error && reply[0]) {
         size_t offset = strlen(reply) - 1;
-        offset += (size_t)snprintf(reply + offset, size - offset, ",\"token_ids\":[");
-        for (unsigned i = 0; i < s->logical; i++) {
-            offset += (size_t)snprintf(reply + offset, size - offset, "%s%u", i ? "," : "", s->tokens[i]);
+        int fits = append(reply, size, &offset, ",\"token_ids\":[");
+        for (unsigned i = 0; fits && i < s->logical; i++) {
+            fits = append(reply, size, &offset, "%s%u", i ? "," : "", s->tokens[i]);
         }
-        snprintf(reply + offset, size - offset, "]}");
+        if (!fits || !append(reply, size, &offset, "]}")) {
+            status = 500;
+            error = "reply_capacity";
+        }
     }
 done:
     if (error) {
