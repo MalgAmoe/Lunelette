@@ -72,4 +72,15 @@ Official tokenizer replay, full input/forced ledgers, checkpoint/pending state,
 actual strategy/kernel reporting, identical named-buffer sizes and clean shutdown
 were independently checked. No retries or tolerance relaxation. Task success
 remained null. This establishes bounded native consistency only; there is no
-speedup, successful-task throughput or independent-reference acceptance claim.
+speedup, successful-task throughput or independent-reference acceptance claim
+from that replay.
+
+A later [free-greedy document/history panel](useful-workload-panel.md) passed40/40
+compact checks across arithmetic/lookup, chunks128/256 and two repetitions.
+Actual trajectories and same-chunk work receipts matched. Lookup's reported
+decode component was lower, but its overall advantage was only0.9% at256 and2.4%
+at128, reversing direction between repetitions; no whole-workload winner or
+default promotion follows. Chunk256 showed the clearer useful-workload benefit.
+Resident256 was refused by the unchanged availability guard before tasks, and
+resident128 was not attempted, so this was not a completed three-strategy timing
+comparison. Independent numerical discrepancies remain unresolved.
