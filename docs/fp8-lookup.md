@@ -82,5 +82,9 @@ decode component was lower, but its overall advantage was only0.9% at256 and2.4%
 at128, reversing direction between repetitions; no whole-workload winner or
 default promotion follows. Chunk256 showed the clearer useful-workload benefit.
 Resident256 was refused by the unchanged availability guard before tasks, and
-resident128 was not attempted, so this was not a completed three-strategy timing
-comparison. Independent numerical discrepancies remain unresolved.
+resident128 was not attempted in that original campaign. A separately authorized
+follow-up subsequently passed20/20 resident checks at both chunks with the same
+binary and frozen tasks, completing the bounded configuration coverage across
+separate runs. Resident256 had lower mean generation latency but substantially more
+named memory and slower decode/loading; this does not promote a universal strategy
+winner. Independent numerical discrepancies remain unresolved.

@@ -13,6 +13,11 @@ decode component was consistently lower, not enough to establish a whole-workloa
 winner here. No defaults were changed. These are diagnostic observations, not
 production performance acceptance.
 
+A subsequently authorized resident follow-up completed both chunks. Resident256
+is a latency-first alternative when memory permits:18.402s mean versus19.426s
+compact arithmetic, but13.844GiB named buffers versus5.495GiB and slower loading.
+Keep the compact recommendation for memory-conscious use; see the follow-up below.
+
 ## Source and incomplete resident comparison
 
 Scenario controls, native replay and lookup were committed as
@@ -25,15 +30,16 @@ Tokenizer SHA256:
 The original six-cell panel stopped before its first task: resident FP32/chunk256
 required availability **>16.02GiB**, but the guard's last estimate was15.94GiB.
 Client1/server2, owned group gone, no readiness or generation requests. This is
-resource admission refusal, not task-quality failure. Resident128 was not tried;
-its admissibility and both resident configurations' latency remain unmeasured.
+resource admission refusal, not task-quality failure. Resident128 was not tried
+in that original campaign. Both configurations later completed in the separately
+authorized follow-up below; the original refusal remains preserved.
 
 A separately frozen continuation ran only the four originally planned compact
 cells, without retrying resident, changing the guard, evicting processes or
 repairing prompts. Same scenario bytes/source/binary, context4352, MPS, reuseON;
 two repetitions in fresh sessions per model load. Each process exited
 client/server0 and its owned group was gone. Original failure/skipped-cell records
-remain unchanged. The full three-strategy comparison is **not complete**.
+remain unchanged. At that stage the three-strategy comparison was incomplete.
 
 ## Exact scores and executed work
 
@@ -102,9 +108,48 @@ malformed partial-result preservation and cleanup errors. Independent audit test
 passed normal/-O on a matching copy and deliberately corrupted score, work and
 ledger copies. Original artifacts were not altered.
 
-This adds bounded compact document-size×chunk and growing-history coverage, not a
-broad response-length sweep or full strategy comparison. Fixed order, two
+This initial panel added bounded compact document-size×chunk and growing-history
+coverage. The subsequent resident follow-up below completes that small configuration
+matrix across separate runs, not a broad response-length or strategy benchmark. Fixed order, two
 non-independent repetitions and no thermal control cannot settle small timing
 differences. Strict independent-reference discrepancies and historical wrong
 answers remain unresolved. Native consistency is not independent correctness;
 no peak-memory, energy, general quality or performance acceptance follows.
+
+## Subsequently authorized resident follow-up
+
+One new attempt per chunk,128 then256, completed under the unchanged memory guard,
+using the exact retained d88541d binary and frozen scenario. HEAD749bf6a added only
+documentation; runtime source and binary identity were checked separately. Neither
+resident configuration was automatically retried. Each loaded once, used two
+sessions and exited client/server0 with its owned group gone.
+
+All20 resident exact EOS/ready checks passed. Together with40 compact checks,
+all six configurations now have successful bounded results across separately timed
+runs—not60 independent tasks. Complete trajectories and work-v2 counters matched
+both compact controls at each chunk:48 generated/8732 model tokens per cell.
+These counters do not imply identical GPU operations across storage strategies.
+
+| Resident chunk | Checks | Rep1 generation seconds | Rep2 generation seconds | Mean seconds | Named buffers GiB | Load seconds |
+|---|---:|---:|---:|---:|---:|---:|
+|128|10/10|19.734|18.509|19.121|13.741|7.230|
+|256|10/10|18.964|17.840|18.402|13.844|7.381|
+
+At256, resident mean generation latency was5.3% below arithmetic and4.4% below
+lookup, with8.350GiB extra named buffers. Its longer archive averaged8.615s and
+last history turn5.505s. It did not win every case: the short archive averaged
+2.140s, including a retained2.750s first-repetition request versus1.530s in the
+second. No first-use measurement was discarded or assigned an unverified cause.
+
+Mean resident decode-step time was148.79ms at128 and148.72ms at256, slower than
+both compact strategies. Its overall advantage is specific to this ingestion-heavy,
+short-answer mix; it does not establish superior long-response throughput. Loading
+was also slower. Maximum observed resident footprint samples were13.876/13.975GiB,
+not peaks. The earlier memory refusal remains relevant to operational headroom.
+
+The follow-up ran later, not interleaved with compact controls. Two repetitions,
+temporal separation and uncontrolled thermals limit ranking confidence. Main
+independently checked all20 official input/output ledgers, scores, state, work and
+timing invariants, plus source/binary identity and cleanup. No-model audit checks
+accepted a known match and rejected corrupted work/ledger copies while retaining
+strict wrong-answer failure. No independent numerical or default promotion follows.
