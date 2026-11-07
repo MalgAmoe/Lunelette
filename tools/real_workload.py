@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Versioned diagnostic workload runner. Explicit native or model-free launch."""
 import argparse
+import copy
+import contextlib
 import http.client
 import json
 import os
@@ -92,10 +94,15 @@ def validate_scenario(value, context=256):
     return value
 
 
+class AdmissionError(ValueError):
+    """Request rejected before a generation stream was admitted."""
+
+
 class Service:
     """Owns only the child it launches. Every request/arrival/failure is recorded."""
     def __init__(self, executable, output, tick_ms=50, native_args=None, request_seconds=120,
-                 expected_strategy=None, evaluation_mode="free_greedy"):
+                 expected_strategy=None, evaluation_mode="free_greedy", absolute_deadline=None, log_bytes=None,
+                 evidence_config=None):
         if type(request_seconds) not in (int, float) or not 1 <= request_seconds <= 120:
             raise ValueError("request_seconds outside 1..120")
         if expected_strategy is not None and (native_args is None or expected_strategy not in
@@ -107,25 +114,48 @@ class Service:
             raise ValueError("evaluation/capture arguments are owned by Service")
         if evaluation_mode == "controlled_replay" and "--tools" in native_args:
             raise ValueError("replay prohibits tools")
+        self.absolute_deadline = absolute_deadline
+        self.log_bytes = log_bytes
+        self.log_lock = threading.Lock()
         self.evaluation_mode = evaluation_mode
         self.native = native_args is not None
         self.request_seconds = request_seconds if self.native else 15
+        config_text = None if evidence_config is None else json.dumps(evidence_config, indent=2) + "\n"
+        if config_text is not None and len(config_text.encode()) > 65536:
+            raise ValueError("evidence config exceeds 65536 bytes")
         self.output = Path(output)
         self.output.mkdir(parents=True, exist_ok=False)
         self.log = (self.output / "client.ndjson").open("x")
-        self.stderr = (self.output / "server.stderr").open("x")
         try:
+            self.stderr = (self.output / "server.stderr").open("x")
+        except BaseException:
+            self.log.close()
+            raise
+        try:
+            if config_text is not None:
+                with (self.output / "config.json").open("x") as config_file:
+                    config_file.write(config_text)
             arguments = [str(Path(executable).resolve()), "--port", "0"]
             arguments += native_args if self.native else ["--tick-ms", str(tick_ms)]
             if evaluation_mode == "controlled_replay":
                 self.replay_path = self.output.resolve() / "replay-logits.bin"
                 arguments += ["--evaluation-mode", "controlled-replay", "--replay-logits", str(self.replay_path)]
             self.process = subprocess.Popen(arguments,
-                                            stdout=self.stderr, stderr=subprocess.PIPE)
+                                            stdout=self.stderr if log_bytes is None else subprocess.PIPE,
+                                            stderr=subprocess.PIPE if log_bytes is None else subprocess.STDOUT)
+            if log_bytes is not None:
+                self.process.stderr = self.process.stdout
         except BaseException as error:
-            self.record("failure", phase="startup", error=repr(error))
-            self.stderr.close()
-            self.log.close()
+            try:
+                self.record("failure", phase="startup", error=repr(error))
+            except Exception:
+                pass
+            finally:
+                for stream in (self.stderr, self.log):
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
             raise
         self.port = None
         self.stderr_thread = None
@@ -134,6 +164,8 @@ class Service:
         line = bytearray()
         try:
             deadline = time.monotonic() + (180 if self.native else 3)
+            if absolute_deadline is not None:
+                deadline = min(deadline, absolute_deadline)
             startup_bytes = 0
             while self.port is None:
                 remaining = deadline - time.monotonic()
@@ -150,7 +182,7 @@ class Service:
                     continue
                 complete_line = bytes(line)
                 line.clear()
-                self.stderr.write(complete_line.decode(errors="replace"))
+                self.write_diagnostic(complete_line.decode(errors="replace"))
                 self.stderr.flush()
                 try:
                     announcement = json.loads(complete_line)
@@ -160,7 +192,7 @@ class Service:
                 else:
                     if announcement.get("event") == "listening":
                         self.port = announcement["port"]
-            if self.native:
+            if self.native or log_bytes is not None:
                 self.stderr_thread = threading.Thread(target=self.drain_stderr, daemon=True)
                 self.stderr_thread.start()
             health = self.request("GET", "/health")[1]
@@ -181,15 +213,21 @@ class Service:
                     workload_scenarios.equal(info.get(key), expected, "replay info mismatch")
             self.info = info
         except BaseException as error:
-            if line:
-                self.stderr.write(line.decode(errors="replace"))
-                self.stderr.flush()
-            self.record("failure", phase="startup", error=repr(error))
             try:
-                self.close()
-            except BaseException as cleanup_error:
-                # Preserve the cause of startup failure, not just cleanup's error.
-                print(f"real-workload: startup cleanup: {cleanup_error}", file=sys.stderr)
+                if line:
+                    self.write_diagnostic(line.decode(errors="replace"))
+                    self.stderr.flush()
+            except Exception:
+                pass
+            try:
+                self.record("failure", phase="startup", error=repr(error))
+            except Exception:
+                pass
+            finally:
+                try:
+                    self.close()
+                except BaseException as cleanup_error:
+                    print(f"real-workload: startup cleanup: {cleanup_error}", file=sys.stderr)
             raise
 
     def drain_stderr(self):
@@ -207,7 +245,8 @@ class Service:
                 chunk = os.read(self.process.stderr.fileno(), 4096)
                 if not chunk:
                     return
-                self.stderr.write(chunk.decode(errors="replace"))
+                decoded = chunk.decode(errors="replace")
+                self.write_diagnostic(decoded)
                 self.stderr.flush()
                 if self.stderr_stop.is_set():
                     trailing_bytes += len(chunk)
@@ -216,10 +255,22 @@ class Service:
         except Exception as error:
             self.stderr_error = repr(error)
 
+    def write_diagnostic(self, text):
+        limit = getattr(self, "log_bytes", None)
+        if limit is not None and self.stderr.tell() + len(text.encode()) > limit:
+            self.stderr_error = "diagnostic log byte limit"
+            raise RuntimeError(self.stderr_error)
+        self.stderr.write(text)
+
     def record(self, kind, **values):
-        self.log.write(json.dumps({"kind": kind, "monotonic": time.monotonic(), **values},
-                                  ensure_ascii=False) + "\n")
-        self.log.flush()
+        line = json.dumps({"kind": kind, "monotonic": time.monotonic(), **values},
+                          ensure_ascii=False) + "\n"
+        with getattr(self, "log_lock", contextlib.nullcontext()):
+            if getattr(self, "log_bytes", None) is not None and self.log.tell() + len(line.encode()) > self.log_bytes:
+                self.stderr_error = "client log byte limit"
+                raise RuntimeError(self.stderr_error)
+            self.log.write(line)
+            self.log.flush()
 
     def bounded_timeout(self, seconds):
         deadline = getattr(self, "absolute_deadline", None)
@@ -239,8 +290,8 @@ class Service:
         payload = b"" if body is None else json.dumps(body).encode()
         sent = time.monotonic()
         raw = bytearray()
-        self.record("send", method=method, path=path, body=body)
         try:
+            self.record("send", method=method, path=path, body=body)
             connection.request(method, path, payload, {"Content-Length": str(len(payload))})
             transport_socket = getattr(connection, "sock", None)
             response = connection.getresponse()
@@ -274,7 +325,11 @@ class Service:
         finally:
             connection.close()
 
-    def generate(self, session, request_id, budget, cancel=False, replay_tokens=None):
+    def generate(self, session, request_id, budget, cancel=False, replay_tokens=None, on_event=None):
+        """Stream validated events to optional synchronous callback; exceptions abort.
+
+        Events precede final retained-result checks. The default remains buffered.
+        """
         replay = replay_tokens is not None
         if replay != (getattr(self, "evaluation_mode", "free_greedy") == "controlled_replay"):
             raise ValueError("generation evaluation mode mismatch")
@@ -293,7 +348,6 @@ class Service:
         path = f"/sessions/{session}/generate"
         body = json.dumps(payload).encode()
         sent = time.monotonic()
-        self.record("send", method="POST", path=path, body=body.decode())
         first_text = None
         events, text, raw_line = [], "", bytearray()
         terminal_seen = False
@@ -304,9 +358,13 @@ class Service:
         if getattr(self, "absolute_deadline", None) is not None:
             deadline = min(deadline, self.absolute_deadline)
         try:
+            self.record("send", method="POST", path=path, body=body.decode())
             connection.request("POST", path, body)
             transport_socket = getattr(connection, "sock", None)
             response = connection.getresponse()
+            if response.status in {400, 404, 409, 422}:
+                detail = response.read(65536)
+                raise AdmissionError(f"generation admission rejected ({response.status}): {detail!r}")
             if response.status != 200 or response.getheader("Content-Type") != "application/x-ndjson":
                 raise RuntimeError((response.status, response.read()))
             if cancel:
@@ -368,6 +426,8 @@ class Service:
                         if event["text"] and first_text is None:
                             first_text = arrived - sent
                         text += event["text"]
+                    if on_event is not None:
+                        on_event(copy.deepcopy(event))
             if raw_line or not events or events[-1]["event"] not in {"completed", "cancelled", "error"}:
                 raise RuntimeError("missing complete terminal event")
             result = {**events[-1], "text": text,
@@ -442,36 +502,60 @@ class Service:
         return workload_scenarios.control(self, session, operation, identity, saved)
 
     def close(self):
-        timed_out = False
-        if self.process.poll() is None:
-            self.process.terminate()
+        failed = False
+
+        def evidence(kind, **values):
+            nonlocal failed
+            try:
+                self.record(kind, **values)
+            except Exception:
+                failed = True
+
         try:
-            self.process.wait(timeout=120 if getattr(self, "native", False) else 3)
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            self.record("failure", error="owned child shutdown timed out; killing")
-            self.process.kill()
-            self.process.wait(timeout=3)
-        reader = getattr(self, "stderr_thread", None)
-        if reader:
-            self.stderr_stop.set()
-            reader.join(timeout=3)
-            if reader.is_alive():
-                self.record("failure", error="native diagnostic reader did not finish")
-                return False
-            if self.stderr_error:
-                self.record("failure", error=self.stderr_error)
-                timed_out = True
-        if self.process.stderr:
-            if not reader:
-                self.stderr.write(self.process.stderr.read().decode(errors="replace"))
-            self.process.stderr.close()
-        self.record("shutdown", returncode=self.process.returncode)
-        if self.process.returncode != 0:
-            self.record("failure", error="owned child exited unsuccessfully")
-        self.stderr.close()
-        self.log.close()
-        return not timed_out and self.process.returncode == 0
+            if self.process.poll() is None:
+                self.process.terminate()
+            try:
+                self.process.wait(timeout=3 if getattr(self, "log_bytes", None) is not None
+                                  else (120 if getattr(self, "native", False) else 3))
+            except subprocess.TimeoutExpired:
+                failed = True
+                self.process.kill()
+                self.process.wait(timeout=3)
+                evidence("failure", error="owned child shutdown timed out; killed")
+            reader = getattr(self, "stderr_thread", None)
+            if reader:
+                self.stderr_stop.set()
+                reader.join(timeout=3)
+                if reader.is_alive():
+                    failed = True
+                    evidence("failure", error="native diagnostic reader did not finish")
+                if self.stderr_error:
+                    failed = True
+                    evidence("failure", error=self.stderr_error)
+            if self.process.stderr:
+                if not reader:
+                    while True:
+                        chunk = self.process.stderr.read(4096)
+                        if not chunk:
+                            break
+                        try:
+                            self.write_diagnostic(chunk.decode(errors="replace"))
+                        except Exception:
+                            failed = True
+                            break
+                self.process.stderr.close()
+            evidence("shutdown", returncode=self.process.returncode)
+            if self.process.returncode != 0:
+                evidence("failure", error="owned child exited unsuccessfully")
+        finally:
+            # Evidence failures must never prevent closing the remaining resources.
+            for stream in (self.process.stderr, self.stderr, self.log):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        failed = True
+        return not failed and not getattr(self, "stderr_error", None) and self.process.returncode == 0
 
 
 def run_once(service, scenario):
