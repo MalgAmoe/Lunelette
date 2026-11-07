@@ -6,6 +6,9 @@
 #include "generation.h"
 #include <CommonCrypto/CommonDigest.h>
 #include <stdio.h>
+#include <float.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdlib.h>
@@ -24,6 +27,9 @@ typedef struct {
     lunelette_metal_checkpoint *checkpoint;
     service_work work;
     const float *logits;
+    FILE *replay_file;
+    unsigned replay_index;
+    int replay_failed;
     char info[4096];
 } native_service;
 
@@ -104,6 +110,9 @@ static void native_destroy(void *context)
     native_invalidate(n);
     lunelette_metal_destroy(n->runtime);
     lunelette_tokenizer_close(n->tokenizer);
+    if (n->replay_file) {
+        fclose(n->replay_file);
+    }
     free(n);
 }
 
@@ -332,7 +341,45 @@ static int copy_logits(void *context, const int64_t *ids, size_t count,
     return 0;
 }
 
-static int native_next(void *context)
+static int write_u32(FILE *file, uint32_t value)
+{
+    unsigned char bytes[4] = {value & 255, (value >> 8) & 255,
+                              (value >> 16) & 255, (value >> 24) & 255};
+    return fwrite(bytes, 1, sizeof(bytes), file) == sizeof(bytes);
+}
+
+static int capture(native_service *n, unsigned forced, unsigned greedy)
+{
+    FILE *file = n->replay_file;
+    if (n->replay_failed || n->replay_index >= SERVICE_REPLAY_TOKENS ||
+        !write_u32(file, n->replay_index) || !write_u32(file, n->length) ||
+        !write_u32(file, forced) || !write_u32(file, greedy)) {
+        n->replay_failed = 1;
+        return 0;
+    }
+    for (unsigned i = 0; i < n->length; i++) {
+        if (!write_u32(file, n->prefix[i])) {
+            n->replay_failed = 1;
+            return 0;
+        }
+    }
+    for (unsigned i = 0; i < LUNELETTE_VOCAB_SIZE; i++) {
+        uint32_t bits;
+        memcpy(&bits, &n->logits[i], sizeof(bits));
+        if (!isfinite(n->logits[i]) || !write_u32(file, bits)) {
+            n->replay_failed = 1;
+            return 0;
+        }
+    }
+    if (fflush(file)) {
+        n->replay_failed = 1;
+        return 0;
+    }
+    n->replay_index++;
+    return 1;
+}
+
+static int native_select(void *context, int replay, unsigned forced)
 {
     native_service *n = context;
     int64_t ids[SERVICE_CONTEXT_MAX];
@@ -342,7 +389,9 @@ static int native_next(void *context)
     lunelette_generation_config config = {1, 2};
     lunelette_generation_result result;
     char error[512];
-    if (n->pending) {
+    if (n->pending || (replay && (!n->replay_file || n->replay_failed ||
+        n->replay_index >= SERVICE_REPLAY_TOKENS ||
+        (!(forced >= 1000 && forced < LUNELETTE_VOCAB_SIZE) && forced != 2)))) {
         return -1;
     }
     if (lunelette_generate_with_logits_capacity(copy_logits, n, ids, n->length, n->capacity,
@@ -354,14 +403,41 @@ static int native_next(void *context)
         fprintf(stderr, "generate: expected one token, got %zu\n", result.count);
         return -1;
     }
-    n->emitted = (unsigned)result.tokens[0];
+    if (replay && !capture(n, forced, (unsigned)result.tokens[0])) {
+        return -1;
+    }
+    n->emitted = replay ? forced : (unsigned)result.tokens[0];
     n->pending = 1;
     return (int)n->emitted;
+}
+
+static int native_next(void *context)
+{
+    return native_select(context, 0, 0);
+}
+
+static int native_replay_next(void *context, unsigned token)
+{
+    return native_select(context, 1, token);
+}
+
+/* Encode explicitly LE; reject non-IEEE host representations before creating evidence. */
+static int replay_float_format(void)
+{
+    if (sizeof(float) != 4 || FLT_RADIX != 2 || FLT_MANT_DIG != 24 || FLT_MAX_EXP != 128) {
+        return 0;
+    }
+    float one = 1.0f, minus = -2.5f;
+    uint32_t a, b;
+    memcpy(&a, &one, 4);
+    memcpy(&b, &minus, 4);
+    return a == UINT32_C(0x3f800000) && b == UINT32_C(0xc0200000);
 }
 
 int service_native_open(int argc, char **argv, service_generator *generator, unsigned *port)
 {
     const char *model = NULL, *tokenizer = NULL, *prefill = NULL, *strategy_name = NULL;
+    const char *evaluation = NULL, *replay_path = NULL;
     int context = 0, chunk = 0, port_seen = 0;
     unsigned policy = 0, tools = 0;
     for (int i = 1; i < argc; i += 2) {
@@ -369,12 +445,18 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             return 0;
         }
         const char *key = argv[i], *value = argv[i + 1];
-        if (!strcmp(key, "--model") && !model) {
+        if (!strcmp(key, "--evaluation-mode") && !evaluation &&
+            !strcmp(value, "controlled-replay")) {
+            evaluation = value;
+        } else if (!strcmp(key, "--replay-logits") && !replay_path && *value) {
+            replay_path = value;
+        } else if (!strcmp(key, "--model") && !model) {
             model = value;
         } else if (!strcmp(key, "--tokenizer") && !tokenizer) {
             tokenizer = value;
         } else if (!strcmp(key, "--strategy") && !strategy_name &&
-                   (!strcmp(value, "resident-fp32") || !strcmp(value, "compact-fp8-arithmetic"))) {
+                   (!strcmp(value, "resident-fp32") || !strcmp(value, "compact-fp8-arithmetic") ||
+                    !strcmp(value, "compact-fp8-lookup"))) {
             strategy_name = value;
         } else if (!strcmp(key, "--context") && !context && (!strcmp(value, "256") || !strcmp(value, "4352"))) {
             context = atoi(value);
@@ -406,7 +488,8 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             return 0;
         }
     }
-    if (!model || !tokenizer || !strategy_name || !prefill || !port_seen) {
+    if (!model || !tokenizer || !strategy_name || !prefill || !port_seen ||
+        (!!evaluation != !!replay_path) || (evaluation && (tools || !replay_float_format()))) {
         return 0;
     }
     if (!context) {
@@ -427,29 +510,48 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         free(n);
         return 0;
     }
+    if (evaluation) {
+        int fd = open(replay_path, O_WRONLY | O_CREAT | O_EXCL, 0600);
+        if (fd < 0) {
+            free(n);
+            return 0;
+        }
+        n->replay_file = fdopen(fd, "wb");
+        if (!n->replay_file) {
+            close(fd);
+            free(n);
+            return 0;
+        }
+        if (fwrite("LNRPLY1\0", 1, 8, n->replay_file) != 8 ||
+            !write_u32(n->replay_file, LUNELETTE_VOCAB_SIZE) ||
+            !write_u32(n->replay_file, SERVICE_REPLAY_TOKENS) || fflush(n->replay_file)) {
+            native_destroy(n);
+            return 0;
+        }
+    }
     char error[512], model_hash[65], tokenizer_hash[65];
     double start = seconds();
     if (!hash_file(model, model_hash) || !hash_file(tokenizer, tokenizer_hash)) {
         fprintf(stderr, "load: cannot hash the explicit model/tokenizer files\n");
-        free(n);
+        native_destroy(n);
         return 0;
     }
     if (!lunelette_tokenizer_open(tokenizer, &n->tokenizer, error, sizeof(error))) {
         fprintf(stderr, "tokenizer: %s\n", error);
-        free(n);
+        native_destroy(n);
         return 0;
     }
     lunelette_metal_options options = {
         !strcmp(prefill, "mps") ? LUNELETTE_METAL_PREFILL_MPS : LUNELETTE_METAL_PREFILL_CUSTOM,
         !strcmp(strategy_name, "resident-fp32") ? LUNELETTE_METAL_RESIDENT_FP32 :
-            LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC
+            (!strcmp(strategy_name, "compact-fp8-lookup") ?
+                LUNELETTE_METAL_COMPACT_FP8_LOOKUP : LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC)
     };
     lunelette_metal_limits limits = {(size_t)context, (size_t)chunk};
     n->runtime = lunelette_metal_create_configured(model, &options, &limits, error, sizeof(error));
     if (!n->runtime) {
         fprintf(stderr, "load: %s\n", error);
-        lunelette_tokenizer_close(n->tokenizer);
-        free(n);
+        native_destroy(n);
         return 0;
     }
     n->loads++;
@@ -461,9 +563,10 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         return 0;
     }
     const char *actual_strategy = memory.strategy == LUNELETTE_METAL_RESIDENT_FP32 ?
-        "resident-fp32" : "compact-fp8-arithmetic";
+        "resident-fp32" : (memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ?
+            "compact-fp8-lookup" : "compact-fp8-arithmetic");
     int written = snprintf(n->info, sizeof(n->info),
-        "{\"generator\":\"native_greedy\",\"model_loaded\":true,\"runtime_ready\":true,"
+        "{\"generator\":\"%s\",%s\"model_loaded\":true,\"runtime_ready\":true,"
         "\"model_sha256\":\"%s\",\"tokenizer_sha256\":\"%s\","
         "\"tokenizer_remote_identity\":\"content_hash_only_see_framing_evidence\","
         "\"model_load_count\":%u,\"loading_duration_ms\":%.3f,"
@@ -484,16 +587,20 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         "\"numerical_validation_scope\":\"%s; strict independent reference gates unresolved\","
         "\"compact_model_validation\":\"%s\","
         "\"numerical_comparison_performed_at_startup\":false,"
-        "\"published_validation_document\":\"docs/real-workload-m4.md\","
+        "\"published_validation_document\":\"%s\","
         "\"named_resident_weight_bytes\":%" PRIu64 ",\"named_conversion_stage_bytes\":%" PRIu64 ","
         "\"named_scratch_bytes\":%" PRIu64 ",\"named_kv_bytes\":%" PRIu64 ","
         "\"named_buffer_total_bytes\":%" PRIu64 ","
         "\"driver_memory_bytes\":null,\"build_commit\":\"%s\",\"build_dirty\":%s}",
+        evaluation ? "native_controlled_replay" : "native_greedy",
+        evaluation ? "\"evaluation_mode\":\"controlled_replay\","
+            "\"replay_max_tokens\":16,\"replay_capture_limit\":16," : "",
         model_hash, tokenizer_hash, n->loads, (seconds() - start) * 1000, actual_strategy, prefill,
         memory.strategy ? "FP8 projection storage, FP32 reconstruction" : "FP32 resident weights",
         options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS accumulation unspecified" :
             "precise FP32 custom arithmetic",
-        memory.strategy ? "compact-FP8-arithmetic" : "precise-FP32",
+        memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ? "compact-FP8-lookup" :
+            (memory.strategy ? "compact-FP8-arithmetic" : "precise-FP32"),
         memory.strategy ? (options.prefill == LUNELETTE_METAL_PREFILL_MPS ?
             "FP8-convert-stage-then-MPS" : "FP8-convert-stage-then-precise-FP32") :
             (options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS" : "precise-FP32"),
@@ -506,9 +613,13 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         policy && !tools ? "true" : "false", policy == 1 ? "true" : "false",
         policy == 1 ? "on" : policy == 2 ? "off" : "legacy",
         policy ? "external_evidence_only" : "not_applicable",
-        memory.strategy ? "compact published evidence only; no runtime attestation" :
-            "resident published evidence only; no runtime attestation",
+        memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ?
+            "lookup candidate strategy-specific evidence only; no runtime attestation" :
+            (memory.strategy ? "compact published evidence only; no runtime attestation" :
+                "resident published evidence only; no runtime attestation"),
         memory.strategy ? "external_evidence_only" : "not_applicable",
+        memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ?
+            "docs/fp8-lookup.md" : "docs/real-workload-m4.md",
         memory.weight_bytes, memory.conversion_stage_bytes, memory.scratch_bytes,
         memory.kv_bytes, memory.total_bytes, SERVICE_COMMIT, SERVICE_DIRTY);
     if (written < 0 || (size_t)written >= sizeof(n->info)) {
@@ -517,7 +628,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         return 0;
     }
     *generator = (service_generator){
-        .context = n, .next = native_next, .materialize = native_materialize,
+        .context = n, .next = native_next,
+        .replay_next = evaluation ? native_replay_next : NULL,
+        .materialize = native_materialize,
         .reset = native_reset, .destroy = native_destroy, .frame = native_frame,
         .native_tools = tools, .tool_frame = tools ? native_tool_frame : NULL,
         .piece = native_piece, .eos = 2, .info = n->info, .prefix_reuse = policy,

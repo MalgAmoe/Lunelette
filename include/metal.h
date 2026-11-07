@@ -23,7 +23,8 @@ typedef enum {
 
 typedef enum {
     LUNELETTE_METAL_RESIDENT_FP32 = 0,
-    LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC = 1
+    LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC = 1,
+    LUNELETTE_METAL_COMPACT_FP8_LOOKUP = 2
 } lunelette_metal_strategy;
 
 typedef struct {
@@ -38,7 +39,8 @@ typedef struct {
  * MPS is the default for multi-token block projections; decode/head stay precise.
  * MPS uses FP32 storage, but internal accumulation precision is unspecified.
  * CUSTOM retains precise FP32 custom arithmetic. Compact storage uses arithmetic
- * FP8 decode and FP32 scaling in single-token block projections; multi-token
+ * FP8 decode (or an unscaled constant lookup when selected) and FP32 scaling
+ * in single-token block projections; multi-token
  * blocks first convert into one stable FP32 stage, then use the selected policy.
  * Embedding, tied head and norms remain FP32. Compact payload admission requires
  * positive FP32-normal widened BF16 weight scales and finite codes with normal

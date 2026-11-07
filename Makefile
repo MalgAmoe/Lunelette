@@ -182,9 +182,13 @@ $(BUILD)/test_service_session: tests/test_service_session.c $(SERVICE_SOURCES) $
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_session.c $(SERVICE_SOURCES) -o $@ -pthread
 $(BUILD)/test_service_transport: tests/test_service_transport.c service/http.c src/metal_plan.h $(MODEL_HEADERS) include/metal.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_transport.c $(SERVICE_SOURCES) -o $@ -pthread
+$(BUILD)/test_service_replay: tests/test_service_replay.c tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_replay.c $(SERVICE_SOURCES) -o $@ -pthread
+
 .PHONY: service-protocol-test service-test
 core-test: service-protocol-test
-service-protocol-test: $(BUILD)/test_service_tools $(BUILD)/test_service_session $(BUILD)/test_service_pieces $(BUILD)/test_service_metrics $(BUILD)/test_service_chunks $(BUILD)/test_service_json_limits
+service-protocol-test: $(BUILD)/test_service_replay $(BUILD)/test_service_tools $(BUILD)/test_service_session $(BUILD)/test_service_pieces $(BUILD)/test_service_metrics $(BUILD)/test_service_chunks $(BUILD)/test_service_json_limits
+	./$(BUILD)/test_service_replay
 	./$(BUILD)/test_service_tools
 	./$(BUILD)/test_service_session
 	./$(BUILD)/test_service_pieces
@@ -224,6 +228,20 @@ $(BUILD)/test_service_checkpoint_server: tests/test_service_checkpoint_server.c 
 service-checkpoint-test: $(BUILD)/test_service_checkpoint_server
 	@test -n "$(TOKENIZER)" || { echo 'Supply TOKENIZER=/path/to/official/tokenizer.json'; exit 1; }
 	python3 tests/test_service_checkpoint_http.py ./$(BUILD)/test_service_checkpoint_server "$(TOKENIZER)"
+
+$(BUILD)/test_service_replay_native: tests/test_service_replay_native.c tests/test_service_native.c service/native.c service/native.h service/framing.c $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_replay_native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
+
+.PHONY: workload-replay-test
+workload-replay-test: $(BUILD)/test_service_replay_native $(BUILD)/test_service_checkpoint_server
+	@test -n "$(TOKENIZER)" || { echo 'Supply TOKENIZER=/path/to/official/tekken.json'; exit 1; }
+	./$(BUILD)/test_service_replay_native "$(TOKENIZER)"
+	python3 tests/test_workload_replay_http.py ./$(BUILD)/test_service_checkpoint_server "$(TOKENIZER)"
+
+.PHONY: workload-scenarios-test
+workload-scenarios-test: $(BUILD)/test_service_checkpoint_server
+	@test -n "$(TOKENIZER)" || { echo 'Supply TOKENIZER=/path/to/official/tekken.json'; exit 1; }
+	python3 tests/test_workload_scenarios_http.py ./$(BUILD)/test_service_checkpoint_server "$(TOKENIZER)"
 endif
 
 ifeq ($(shell uname -s),Darwin)

@@ -91,6 +91,59 @@ static void test_conversion_tail(LuneletteMetalOwner *owner)
     puts("compact conversion: all 254 finite codes, signed zero, tail, guards PASS");
 }
 
+/* Direct production pipelines with awkward dimensions: compare every output bit,
+ * not a reduced statistic or a relaxed tolerance. Each finite code appears in
+ * both row and column positions, including both signed zeros. */
+static void test_scalar_lookup(LuneletteMetalOwner *owner)
+{
+    const uint32_t columns[] = {1, 7, 31, 33, 257};
+    const float scales[] = {1.0f, 0x1.f6p-12f, 0x1.02p+5f, 0x1p-110f, 0x1p+100f};
+    for (size_t c = 0; c < sizeof columns / sizeof columns[0]; c++) {
+        uint32_t cols = columns[c], rows = 259;
+        id<MTLBuffer> packed = buffer(owner->device, rows * cols);
+        id<MTLBuffer> input = buffer(owner->device, cols * sizeof(float));
+        id<MTLBuffer> outputs[2] = {buffer(owner->device, (rows + 4) * 4),
+            buffer(owner->device, (rows + 4) * 4)};
+        for (size_t i = 0; i < rows * cols; i++) {
+            unsigned code = (unsigned)(i % 254);
+            ((unsigned char *)packed.contents)[i] = (unsigned char)(code + (code >= 127));
+        }
+        for (size_t i = 0; i < cols; i++) {
+            ((float *)input.contents)[i] = (float)((int)(i % 17) - 8) / 16.0f;
+        }
+        for (size_t scale = 0; scale < sizeof scales / sizeof scales[0]; scale++) {
+            id<MTLCommandBuffer> command = [owner->queue commandBuffer];
+            for (size_t candidate = 0; candidate < 2; candidate++) {
+                memset(outputs[candidate].contents, 0x5a, outputs[candidate].length);
+                int operation = candidate ? METAL_PROJECT_FP8_LOOKUP : METAL_PROJECT_FP8;
+                id<MTLComputePipelineState> pipeline = owner->pipelines[operation];
+                id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+                CHECK(encoder);
+                [encoder setComputePipelineState:pipeline];
+                [encoder setBuffer:packed offset:0 atIndex:0];
+                [encoder setBuffer:input offset:0 atIndex:1];
+                [encoder setBuffer:outputs[candidate] offset:0 atIndex:2];
+                uint32_t dims[4] = {rows, cols, 1, 0};
+                [encoder setBytes:dims length:sizeof dims atIndex:3];
+                [encoder setBytes:&scales[scale] length:sizeof(float) atIndex:4];
+                [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(pipeline.threadExecutionWidth, 1, 1)];
+                [encoder endEncoding];
+            }
+            [command commit];
+            [command waitUntilCompleted];
+            CHECK(command.status == MTLCommandBufferStatusCompleted);
+            compare(outputs[1], outputs[0], rows);
+            for (size_t candidate = 0; candidate < 2; candidate++) {
+                for (size_t i = rows * 4; i < outputs[candidate].length; i++) {
+                    CHECK(((unsigned char *)outputs[candidate].contents)[i] == 0x5a);
+                }
+            }
+        }
+    }
+    puts("lookup/arithmetic scalar full outputs bitwise: finite codes/scales/tails PASS");
+}
+
 static void run(LuneletteMetalOwner *owner, LuneletteMetalOwner *control,
     size_t count, lunelette_metal_prefill_mode mode)
 {
@@ -177,8 +230,8 @@ static void run(LuneletteMetalOwner *owner, LuneletteMetalOwner *control,
     __weak id cache = owner->mps_cache;
     CHECK(!lunelette_metal_reset(&context, error, sizeof error));
     CHECK(owner->length == 0 && owner->valid && owner->mps_cache == cache);
-    printf("compact production seam count=%zu mode=%s: 4 projections + stage/guards PASS\n",
-        count, mode == LUNELETTE_METAL_PREFILL_MPS ? "mps" : "custom");
+    printf("compact production seam strategy=%d count=%zu mode=%s: 4 projections + stage/guards PASS\n",
+        owner->memory.strategy, count, mode == LUNELETTE_METAL_PREFILL_MPS ? "mps" : "custom");
 }
 
 int main(void)
@@ -199,6 +252,7 @@ int main(void)
             control->pipelines[i] = owner->pipelines[i];
         }
         test_conversion_tail(owner);
+        test_scalar_lookup(owner);
         owner->memory.strategy = LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC;
         owner->conversion_stage = buffer(device, 113246208 + 16);
         memset(owner->conversion_stage.contents, 0x5a, owner->conversion_stage.length);
@@ -235,14 +289,17 @@ int main(void)
         }
         lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
         CHECK(options.strategy == LUNELETTE_METAL_RESIDENT_FP32);
-        options.strategy = (lunelette_metal_strategy)99;
+        options.strategy = (lunelette_metal_strategy)3;
         CHECK(!lunelette_metal_create_with_options("must-not-open", &options, error, sizeof error));
         CHECK(strstr(error, "invalid strategy"));
         const size_t counts[] = {1, 2, 6, 2};
-        for (size_t mode = 0; mode < 2; mode++) {
-            for (size_t i = 0; i < 4; i++) {
-                @autoreleasepool {
-                    run(owner, control, counts[i], (lunelette_metal_prefill_mode)mode);
+        for (int strategy = 1; strategy <= 2; strategy++) {
+            owner->memory.strategy = (lunelette_metal_strategy)strategy;
+            for (size_t mode = 0; mode < 2; mode++) {
+                for (size_t i = 0; i < 4; i++) {
+                    @autoreleasepool {
+                        run(owner, control, counts[i], (lunelette_metal_prefill_mode)mode);
+                    }
                 }
             }
         }
@@ -266,7 +323,7 @@ int main(void)
         lunelette_metal_memory memory;
         lunelette_metal context = {(__bridge void *)owner};
         CHECK(!lunelette_metal_get_memory(&context, &memory));
-        CHECK(memory.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC);
+        CHECK(memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP);
         CHECK(memory.weight_bytes == (uint64_t)elements[0] + elements[1] + elements[2]);
         CHECK(memory.conversion_stage_bytes == 113246208 + 16);
         CHECK(memory.scratch_bytes == METAL_BUFFER_COUNT * (6 * 9216 * sizeof(float) + 16));
@@ -288,7 +345,7 @@ int main(void)
             owner->weights[4] = nil;
         }
         CHECK(packed == nil); /* Views retain the stage, not the former packed matrix. */
-        puts("Compact integration model-free PASS (32 production projections; no model parity claim)");
+        puts("Compact integration model-free PASS (64 production projections; no model parity claim)");
     }
     return 0;
 }

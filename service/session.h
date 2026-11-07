@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "tokenizer_json.h"
+#define SERVICE_REPLAY_TOKENS 16
 #define SERVICE_IDS 256
 #define SERVICE_CONTEXT_MAX 4352
 #define SERVICE_EVENTS 16
@@ -33,6 +34,8 @@ enum {
 typedef struct {
     void *context;
     int (*next)(void *context);
+    /* Opt-in native diagnostic selection; worker-only, authoritative forced ID. */
+    int (*replay_next)(void *context, unsigned token);
     int (*materialize)(void *context, const unsigned *tokens, unsigned length);
     void (*reset)(void *context);
     void (*destroy)(void *context);
@@ -75,6 +78,7 @@ typedef struct {
     char status[16];
     char text[4097];
     unsigned generated, logical, committed, pending;
+    unsigned replay_count, replay_tokens[SERVICE_REPLAY_TOKENS];
     unsigned token_ids[256], prompt, reused, newly_processed;
     double materialize_ms, snapshot_ms, restore_ms;
     double framing_ms, prefill_ms, decode_ms, first_token_ms, total_ms;
@@ -93,6 +97,7 @@ typedef struct {
     service_generator generator;
     unsigned session, logical, committed, pending, tokens[SERVICE_CONTEXT_MAX], budget;
     unsigned requests, active;
+    unsigned replay_reserved; /* Process lifetime: reset/close never reclaim. */
     unsigned assistant_started, outstanding_tool; /* history index + 1; zero absent */
     char state[16];
     service_request history[SERVICE_IDS];

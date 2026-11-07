@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "mode": "controlled_replay",
+  "prefix_reuse": "on",
+  "repetitions": 2,
+  "wall_seconds": 120,
+  "operations": [
+    {"op": "create"},
+    {"op": "message", "content": "Replay diagnostic."},
+    {"op": "checkpoint", "id": "save", "checkpoint": "base"},
+    {"op": "replay", "id": "first", "tokens": [53156, 2]},
+    {"op": "restore", "id": "restore", "checkpoint": "base"},
+    {"op": "replay", "id": "second", "tokens": [53156, 2]},
+    {"op": "close"}
+  ]
+}

@@ -439,6 +439,13 @@ int main(int argc, char **argv)
     CHECK(!service_native_open(15, arguments, &generator, &port));
     CHECK(creates == 5 && destroys == 5); /* A valid but unrequested strategy is not fallback. */
     wrong_strategy = 0;
+    arguments[6] = "compact-fp8-lookup";
+    CHECK(service_native_open(15, arguments, &generator, &port));
+    CHECK(strstr(generator.info, "\"execution_strategy\":\"compact-fp8-lookup\""));
+    CHECK(strstr(generator.info, "compact-FP8-lookup"));
+    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/fp8-lookup.md\""));
+    CHECK(strstr(generator.info, "\"named_conversion_stage_bytes\":113246208"));
+    generator.destroy(generator.context);
     policy_test(arguments, 1);
     policy_test(arguments, 2);
     CHECK(snapshots >= 4 && restores >= 4);

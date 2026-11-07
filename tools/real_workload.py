@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Version-1 diagnostic workload runner. Explicit native or model-free launch."""
+"""Versioned diagnostic workload runner. Explicit native or model-free launch."""
 import argparse
 import http.client
 import json
 import os
 from pathlib import Path
 import select
+import socket
 import subprocess
 import sys
 import time
@@ -13,6 +14,8 @@ import threading
 
 from workload_tools import run_loop, validate_operation
 import native_workload_tools
+import workload_scenarios
+import replay_logits
 
 
 def strict_object(pairs):
@@ -26,9 +29,18 @@ def strict_object(pairs):
 
 def load_scenario(path, context=256):
     value = json.loads(Path(path).read_text(), object_pairs_hook=strict_object)
-    if set(value) != {"version", "mode", "operations"} or type(value["version"]) is not int or value["version"] != 1:
+    return validate_scenario(value, context)
+
+
+def validate_scenario(value, context=256):
+    if not isinstance(value, dict):
+        raise ValueError("scenario must be an object")
+    v2 = type(value.get("version")) is int and value["version"] == 2
+    if v2:
+        workload_scenarios.validate(value)
+    if not v2 and (set(value) != {"version", "mode", "operations"} or type(value["version"]) is not int or value["version"] != 1):
         raise ValueError("expected version 1 scenario schema")
-    if value["mode"] not in {"controlled_protocol_only", "free_greedy"}:
+    if value["mode"] not in ({"free_greedy", "controlled_replay"} if v2 else {"controlled_protocol_only", "free_greedy"}):
         raise ValueError("unsupported scenario mode")
     if not isinstance(value["operations"], list) or len(value["operations"]) > 256:
         raise ValueError("operations must be bounded list")
@@ -37,6 +49,8 @@ def load_scenario(path, context=256):
               "pause": {"seconds"}, "reset": set(), "close": set(),
               "score": {"id", "text"},
               "tool_loop": {"id", "budget", "max_calls", "max_generated", "wall_seconds", "answer"}}
+    if v2:
+        fields.update(checkpoint={"id", "checkpoint"}, restore={"id", "checkpoint"}, replay={"id", "tokens"})
     fields["native_tool_loop"] = fields["tool_loop"]
     fields["native_investigation_loop"] = fields["tool_loop"]
     fields["native_observation_loop"] = fields["tool_loop"]
@@ -73,7 +87,7 @@ def load_scenario(path, context=256):
             raise ValueError("invalid budget")
         if "id" in op and (not isinstance(op["id"], str) or not 1 <= len(op["id"]) <= 64):
             raise ValueError("invalid id")
-        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > ((32768 if context == 4352 else 4096) if value["mode"] == "free_greedy" else 256)):
+        if "content" in op and (not isinstance(op["content"], str) or len(op["content"].encode()) > ((32768 if context == 4352 else 4096) if value["mode"] in {"free_greedy", "controlled_replay"} else 256)):
             raise ValueError("invalid content")
     return value
 
@@ -81,12 +95,19 @@ def load_scenario(path, context=256):
 class Service:
     """Owns only the child it launches. Every request/arrival/failure is recorded."""
     def __init__(self, executable, output, tick_ms=50, native_args=None, request_seconds=120,
-                 expected_strategy=None):
+                 expected_strategy=None, evaluation_mode="free_greedy"):
         if type(request_seconds) not in (int, float) or not 1 <= request_seconds <= 120:
             raise ValueError("request_seconds outside 1..120")
         if expected_strategy is not None and (native_args is None or expected_strategy not in
-                {"resident-fp32", "compact-fp8-arithmetic"}):
+                {"resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"}):
             raise ValueError("expected strategy requires a supported native launch")
+        if evaluation_mode not in {"free_greedy", "controlled_replay"} or (evaluation_mode == "controlled_replay" and native_args is None):
+            raise ValueError("invalid evaluation mode/launch")
+        if native_args and any(a in {"--evaluation-mode", "--replay-logits"} for a in native_args):
+            raise ValueError("evaluation/capture arguments are owned by Service")
+        if evaluation_mode == "controlled_replay" and "--tools" in native_args:
+            raise ValueError("replay prohibits tools")
+        self.evaluation_mode = evaluation_mode
         self.native = native_args is not None
         self.request_seconds = request_seconds if self.native else 15
         self.output = Path(output)
@@ -96,6 +117,9 @@ class Service:
         try:
             arguments = [str(Path(executable).resolve()), "--port", "0"]
             arguments += native_args if self.native else ["--tick-ms", str(tick_ms)]
+            if evaluation_mode == "controlled_replay":
+                self.replay_path = self.output.resolve() / "replay-logits.bin"
+                arguments += ["--evaluation-mode", "controlled-replay", "--replay-logits", str(self.replay_path)]
             self.process = subprocess.Popen(arguments,
                                             stdout=self.stderr, stderr=subprocess.PIPE)
         except BaseException as error:
@@ -142,7 +166,7 @@ class Service:
             health = self.request("GET", "/health")[1]
             info = self.request("GET", "/info")[1]
             if self.native:
-                if not health.get("model_loaded") or not health.get("runtime_ready") or info.get("generator") != "native_greedy":
+                if not health.get("model_loaded") or not health.get("runtime_ready") or info.get("generator") != ("native_controlled_replay" if evaluation_mode == "controlled_replay" else "native_greedy"):
                     raise RuntimeError("native runtime not ready")
                 if info.get("numerical_validation") != "diagnostic_known_reference_mismatches":
                     raise RuntimeError("unexpected numerical status")
@@ -152,6 +176,9 @@ class Service:
                 raise RuntimeError("unexpected readiness")
             if not self.native and (info.get("generator") != "diagnostic_test_generator" or info.get("runtime_ready") is not False):
                 raise RuntimeError("not the diagnostic protocol service")
+            if evaluation_mode == "controlled_replay":
+                for key, expected in {"evaluation_mode": evaluation_mode, "replay_max_tokens": 16, "replay_capture_limit": 16}.items():
+                    workload_scenarios.equal(info.get(key), expected, "replay info mismatch")
             self.info = info
         except BaseException as error:
             if line:
@@ -199,7 +226,7 @@ class Service:
         if deadline is not None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise TimeoutError("application wall deadline exceeded")
+                raise workload_scenarios.DeadlineExceeded("application wall deadline exceeded")
             return min(seconds, remaining)
         return seconds
 
@@ -211,30 +238,60 @@ class Service:
         connection = self.connect()
         payload = b"" if body is None else json.dumps(body).encode()
         sent = time.monotonic()
+        raw = bytearray()
         self.record("send", method=method, path=path, body=body)
         try:
             connection.request(method, path, payload, {"Content-Length": str(len(payload))})
             transport_socket = getattr(connection, "sock", None)
             response = connection.getresponse()
-            if transport_socket is not None:
-                transport_socket.settimeout(self.bounded_timeout(4))
-            raw = response.read()
-            self.bounded_timeout(4)
+            # read() can be held alive by trickling bytes: its socket timeout is
+            # inactivity-based. Bound each available-data read and total bytes.
+            while True:
+                timeout = self.bounded_timeout(4)
+                # Python 3.12 closes a length-delimited response's socket as
+                # soon as read1 consumes its last byte, before another read.
+                if getattr(response, "isclosed", lambda: False)():
+                    break
+                if transport_socket is not None:
+                    transport_socket.settimeout(timeout)
+                chunk = response.read1(4096)
+                self.bounded_timeout(4)
+                if not chunk:
+                    break
+                if len(raw) + len(chunk) > 65536:
+                    raise workload_scenarios.ProtocolError("response exceeds 65536 bytes")
+                raw.extend(chunk)
             result = json.loads(raw, object_pairs_hook=strict_object)
             self.record("response", status=response.status, raw=raw.decode(), elapsed=time.monotonic() - sent)
             return response.status, result
         except BaseException as error:
-            self.record("failure", error=repr(error), path=path)
+            self.record("failure", error=repr(error), path=path, partial_raw_hex=raw.hex())
+            deadline = getattr(self, "absolute_deadline", None)
+            if (isinstance(error, (TimeoutError, socket.timeout)) and deadline is not None
+                    and time.monotonic() >= deadline):
+                raise workload_scenarios.DeadlineExceeded("application wall deadline exceeded") from error
             raise
         finally:
             connection.close()
 
-    def generate(self, session, request_id, budget, cancel=False):
+    def generate(self, session, request_id, budget, cancel=False, replay_tokens=None):
+        replay = replay_tokens is not None
+        if replay != (getattr(self, "evaluation_mode", "free_greedy") == "controlled_replay"):
+            raise ValueError("generation evaluation mode mismatch")
+        payload = {"id": request_id, "budget": budget}
+        before = None
+        if replay:
+            replay_logits.replay_tokens(replay_tokens)
+            budget = len(replay_tokens)
+            payload.update(budget=budget, replay_tokens=",".join(map(str, replay_tokens)))
+            status, before = self.request("GET", f"/sessions/{session}")
+            workload_scenarios.require(status == 200, "cannot inspect replay prefix")
+            workload_scenarios.ledger(before, session, self.info["context_capacity"])
         connection = self.connect()
         if getattr(self, "native", False):
             connection.timeout = self.bounded_timeout(self.request_seconds)
         path = f"/sessions/{session}/generate"
-        body = json.dumps({"id": request_id, "budget": budget}).encode()
+        body = json.dumps(payload).encode()
         sent = time.monotonic()
         self.record("send", method="POST", path=path, body=body.decode())
         first_text = None
@@ -267,7 +324,7 @@ class Service:
                 chunk = response.read1(1024)
                 arrived = time.monotonic()
                 if arrived >= deadline:
-                    raise TimeoutError("diagnostic generation deadline exceeded")
+                    raise workload_scenarios.DeadlineExceeded("diagnostic generation deadline exceeded")
                 if not chunk:
                     break
                 self.record("arrival", raw_hex=chunk.hex(), since_send=arrived - sent)
@@ -281,6 +338,17 @@ class Service:
                     raw_line.clear()
                     if not isinstance(event, dict) or event.get("id") != request_id:
                         raise ValueError("stream request identity mismatch")
+                    if replay:
+                        replay_logits.replay_tokens(event.get("replay_tokens"))
+                        workload_scenarios.equal(event.get("session_id"), session, event)
+                        workload_scenarios.equal(event.get("evaluation_mode"), "controlled_replay", event)
+                        workload_scenarios.equal(event.get("replay_tokens"), replay_tokens, event)
+                        count = event.get("generated_tokens")
+                        workload_scenarios.require(type(count) is int and 0 <= count <= budget, event)
+                        if events:
+                            workload_scenarios.require(count >= events[-1]["generated_tokens"], event)
+                        else:
+                            workload_scenarios.equal(count, 0, event)
                     kind = event.get("event")
                     if terminal_seen or len(events) >= budget + 2:
                         raise ValueError("events after terminal or event count exceeded")
@@ -321,13 +389,57 @@ class Service:
                 if status != 200:
                     raise RuntimeError("cannot inspect native ledger")
                 result["session_metadata"] = ledger
+                if replay:
+                    if result["event"] in {"error", "cancelled"}:
+                        raise workload_scenarios.ControlFailure(result)
+                    replay_logits.replay_tokens(retained.get("replay_tokens"))
+                    for key, expected in {"id": request_id, "session_id": session,
+                                          "operation": "generate"}.items():
+                        workload_scenarios.equal(retained.get(key), expected, retained)
+                    for key in ("state", "logical_tokens", "committed_tokens", "pending_tokens"):
+                        for source in (result, retained):
+                            workload_scenarios.equal(source.get("before_" + key), before[key], source)
+                    for key, expected in {"evaluation_mode": "controlled_replay", "replay_tokens": replay_tokens}.items():
+                        workload_scenarios.equal(retained.get(key), expected, retained)
+                    ids = retained.get("token_ids")
+                    workload_scenarios.require(isinstance(ids, list) and all(type(t) is int for t in ids), retained)
+                    workload_scenarios.equal(ids, replay_tokens[:len(ids)], "replay emitted IDs mismatch")
+                    workload_scenarios.equal(result.get("generated_tokens"), len(ids), "terminal replay count mismatch")
+                    result["token_ids"] = ids
+                    workload_scenarios.equal(retained.get("status"), result["event"], retained)
+                    workload_scenarios.equal(retained.get("generated_tokens"), len(ids), retained)
+                    workload_scenarios.ledger(ledger, session, self.info["context_capacity"])
+                    workload_scenarios.equal(ledger["token_ids"], before["token_ids"] + ids, "replay ledger mismatch")
+                    workload_scenarios.equal(ids, replay_tokens, "incomplete completed replay")
+                    ended = replay_tokens[-1] == 2
+                    expected_state = "ready" if ended else "partial"
+                    expected_counts = {"state": expected_state,
+                                       "logical_tokens": len(before["token_ids"]) + len(ids),
+                                       "committed_tokens": len(before["token_ids"]) + len(ids) - 1,
+                                       "pending_tokens": 1}
+                    for source in (result, retained, ledger):
+                        for key, expected in expected_counts.items():
+                            workload_scenarios.equal(source.get(key), expected, source)
+                    for source in (result, retained):
+                        for key, expected in {"stop_reason": "eos" if ended else "budget",
+                                              "session_valid": True, "recovery": "none"}.items():
+                            workload_scenarios.equal(source.get(key), expected, source)
+                    result["before_prefix_ids"] = before["token_ids"]
+                    result["diagnostic_forced_output"] = True
             self.record("stream_result", **result)
             return result
         except BaseException as error:
             self.record("failure", error=repr(error), path=path)
+            if (isinstance(error, (TimeoutError, socket.timeout))
+                    and not isinstance(error, workload_scenarios.DeadlineExceeded)
+                    and time.monotonic() >= deadline):
+                raise workload_scenarios.DeadlineExceeded("generation deadline exceeded") from error
             raise
         finally:
             connection.close()
+
+    def control(self, session, operation, identity, saved=None):
+        return workload_scenarios.control(self, session, operation, identity, saved)
 
     def close(self):
         timed_out = False
@@ -362,8 +474,8 @@ class Service:
         return not timed_out and self.process.returncode == 0
 
 
-def run(service, scenario):
-    if (scenario["mode"] == "free_greedy") != getattr(service, "native", False):
+def run_once(service, scenario):
+    if (scenario["mode"] in {"free_greedy", "controlled_replay"}) != getattr(service, "native", False):
         raise ValueError("scenario mode must match explicit native/test launch")
     session = None
     start = time.monotonic()
@@ -371,6 +483,10 @@ def run(service, scenario):
     tool_reports = []
     task_checks = []
     previous_generation = None
+    saved = None
+    controls = []
+    replay_steps = []
+    service.operation_report = {"task_checks": task_checks, "tool_loops": tool_reports, "controls": controls, "replay_steps": replay_steps}
 
     def reserve_id(request_id):
         if request_id in request_ids:
@@ -379,8 +495,25 @@ def run(service, scenario):
 
     for op in scenario["operations"]:
         action = op["op"]
+        if scenario.get("version", 1) == 2:
+            service.bounded_timeout(1)
         service.record("operation", operation=op)
-        if action == "score":
+        if action in {"checkpoint", "restore"}:
+            reserve_id(op["id"])
+            receipt = service.control(session, action, op["id"], saved)
+            controls.append(receipt)
+            if action == "checkpoint":
+                saved = receipt
+            result = receipt["terminal"]
+        elif action == "replay":
+            reserve_id(op["id"])
+            result = service.generate(session, op["id"], len(op["tokens"]), replay_tokens=op["tokens"])
+            replay_steps.append({"id": op["id"], "replay_tokens": op["tokens"],
+                                 "actual_ids": result.get("token_ids"),
+                                 "before_prefix_ids": result.get("before_prefix_ids"),
+                                 "result": result})
+            workload_scenarios.equal(result.get("event"), "completed", result)
+        elif action == "score":
             completed_turn = (previous_generation.get("event") == "completed"
                               and previous_generation.get("stop_reason") == "eos"
                               and previous_generation.get("state") == "ready")
@@ -399,7 +532,9 @@ def run(service, scenario):
                         "task_checks": task_checks,
                         "performance_evidence": False}
         elif action == "pause":
-            time.sleep(op["seconds"])
+            time.sleep(service.bounded_timeout(op["seconds"]) if scenario.get("version", 1) == 2 else op["seconds"])
+            if scenario.get("version", 1) == 2:
+                service.bounded_timeout(1)
             result = {}
         elif action in {"generate", "continue", "cancel"}:
             reserve_id(op["id"])
@@ -407,6 +542,9 @@ def run(service, scenario):
             previous_generation = result
             expected_terminal = op.get("expect", {}).get(
                 "event", "cancelled" if action == "cancel" else "completed")
+            if (scenario.get("version", 1) == 2 and result.get("event") == "error"
+                    and expected_terminal != "error"):
+                raise workload_scenarios.ControlFailure(result)
             if result.get("event") != expected_terminal:
                 raise ValueError(f"{action}: expected terminal {expected_terminal!r}, "
                                  f"got {result.get('event')!r}")
@@ -423,6 +561,8 @@ def run(service, scenario):
                 raise RuntimeError(result)
             if action == "create":
                 session = result["session_id"]
+            if action in {"create", "reset", "close"}:
+                saved = None
         for key, expected in op.get("expect", {}).items():
             if result.get(key) != expected:
                 raise ValueError(f"{action}: {key}: expected {expected!r}, got {result.get(key)!r}")
@@ -431,8 +571,70 @@ def run(service, scenario):
                              and all(r["success"] for r in task_checks))
                             if tool_reports or task_checks else None,
             "task_checks": task_checks,
-            "tool_loops": tool_reports, "mode": scenario["mode"],
+            "controls": controls, "replay_steps": replay_steps, "tool_loops": tool_reports, "mode": scenario["mode"],
             "duration_seconds": time.monotonic() - start, "performance_evidence": False}
+
+
+def run(service, scenario):
+    if scenario.get("version", 1) == 1:
+        return run_once(service, scenario)
+    validate_scenario(scenario, getattr(service, "info", {}).get("context_capacity", 256))
+    if not getattr(service, "native", False):
+        raise ValueError("version 2 requires explicit native launch")
+    if getattr(service, "evaluation_mode", "free_greedy") != scenario["mode"]:
+        raise ValueError("scenario evaluation mode mismatch")
+    if service.info.get("prefix_reuse") != scenario["prefix_reuse"]:
+        raise ValueError("scenario prefix policy differs from running service")
+    if (any(op["op"] in {"checkpoint", "restore"} for op in scenario["operations"])
+            and service.info.get("checkpoints") is not True):
+        raise ValueError("running service does not support checkpoints")
+    report = {"protocol_success": False, "task_success": None, "repetitions": [],
+              "completed_repetitions": 0, "planned_repetitions": scenario["repetitions"],
+              "prefix_reuse": scenario["prefix_reuse"], "mode": scenario["mode"],
+              "wall_seconds": scenario["wall_seconds"], "performance_evidence": False}
+    old = getattr(service, "absolute_deadline", None)
+    start = time.monotonic()
+    deadline = start + scenario["wall_seconds"]
+    service.absolute_deadline = min(old, deadline) if old is not None else deadline
+    try:
+        for number in range(1, scenario["repetitions"] + 1):
+            entry = {"repetition": number, "started": time.monotonic(), "completed": False}
+            report["repetitions"].append(entry)
+            service.record("repetition_start", repetition=number)
+            try:
+                entry["result"] = run_once(service, workload_scenarios.expanded(scenario, number))
+                entry["completed"] = entry["result"]["protocol_success"]
+                if not entry["completed"]:
+                    report["failure_kind"] = entry["result"].get("failure_kind", "protocol")
+                    break
+                report["completed_repetitions"] += 1
+            except BaseException as error:
+                entry["error"] = repr(error)
+                report["failure_kind"] = (
+                    "limit" if isinstance(error, workload_scenarios.DeadlineExceeded) else
+                    "protocol" if isinstance(error, (ValueError, workload_scenarios.ProtocolError))
+                    else "runtime")
+                entry["failure_kind"] = report["failure_kind"]
+                entry["partial_result"] = getattr(service, "operation_report", {})
+                service.record("failure", error=repr(error), repetition=number)
+                if not isinstance(error, Exception):
+                    service.scenario_report = report
+                    raise
+                break
+            finally:
+                entry["elapsed_seconds"] = time.monotonic() - entry["started"]
+                service.record("repetition_end", **entry)
+        report["protocol_success"] = report["completed_repetitions"] == scenario["repetitions"]
+        scores = []
+        for entry in report["repetitions"]:
+            evidence = entry.get("result", entry.get("partial_result", {}))
+            scores.extend(c["success"] for c in evidence.get("task_checks", []))
+            scores.extend(c["task_success"] for c in evidence.get("tool_loops", []) if c.get("task_success") is not None)
+        report["task_success"] = all(scores) if scores and report["protocol_success"] else None
+        return report
+    finally:
+        report["elapsed_seconds"] = time.monotonic() - start
+        service.absolute_deadline = old
 
 
 def main():
@@ -440,10 +642,11 @@ def main():
     parser.add_argument("--server", required=True)
     parser.add_argument("--scenario", required=True)
     parser.add_argument("--output", required=True, help="new directory, never overwritten")
+    parser.add_argument("--native-prefix-reuse", choices=["legacy", "on", "off"])
     parser.add_argument("--native-model")
     parser.add_argument("--native-tokenizer")
     parser.add_argument("--native-prefill", choices=["mps", "custom"], default="mps")
-    parser.add_argument("--native-strategy", choices=["resident-fp32", "compact-fp8-arithmetic"],
+    parser.add_argument("--native-strategy", choices=["resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"],
                         help="native storage strategy (default: resident-fp32); requires model/tokenizer")
     parser.add_argument("--request-seconds", type=float, default=120)
     parser.add_argument("--native-context", type=int, choices=[256, 4352], default=256)
@@ -460,7 +663,12 @@ def main():
             native_args = ["--model", args.native_model, "--tokenizer", args.native_tokenizer,
                            "--strategy", args.native_strategy or "resident-fp32", "--context", str(args.native_context), "--prefill-chunk", str(args.native_chunk),
                            "--prefill", args.native_prefill]
-        if (scenario["mode"] == "free_greedy") != (native_args is not None):
+        policy = scenario.get("prefix_reuse", args.native_prefix_reuse or "legacy")
+        if args.native_prefix_reuse is not None and (native_args is None or args.native_prefix_reuse != policy):
+            raise ValueError("conflicting prefix policy or test launch")
+        if native_args is not None and policy != "legacy":
+            native_args += ["--prefix-reuse", policy]
+        if (scenario["mode"] in {"free_greedy", "controlled_replay"}) != (native_args is not None):
             raise ValueError("scenario mode must match explicit native/test launch")
         profiles = {op["op"] for op in scenario["operations"]
                     if op["op"] in {"native_tool_loop", "native_investigation_loop", "native_observation_loop"}}
@@ -476,7 +684,8 @@ def main():
         else:
             service = Service(args.server, args.output, native_args=native_args,
                               request_seconds=args.request_seconds,
-                              expected_strategy=args.native_strategy or "resident-fp32")
+                              expected_strategy=args.native_strategy or "resident-fp32",
+                              evaluation_mode=scenario["mode"])
     except Exception as error:
         print(f"real-workload: {error}", file=sys.stderr)
         return 1
@@ -484,6 +693,10 @@ def main():
                                     service.info.get("prefill_chunk_size") != args.native_chunk):
         service.close()
         print("real-workload: native limits differ from requested profile", file=sys.stderr)
+        return 1
+    if native_args is not None and service.info.get("prefix_reuse") != policy:
+        service.close()
+        print("real-workload: prefix reuse mismatch", file=sys.stderr)
         return 1
     exit_status = 0
     result = {"protocol_success": False, "task_success": None}
@@ -493,7 +706,8 @@ def main():
         result.update(run(service, scenario))
         if not result["protocol_success"]:
             exit_status = 1
-    except Exception as error:
+    except BaseException as error:
+        result.update(getattr(service, "scenario_report", {}))
         service.record("failure", error=repr(error))
         result["error"] = repr(error)
         exit_status = 1
@@ -510,6 +724,19 @@ def main():
             result["protocol_success"] = False
             result["shutdown_failure"] = True
             exit_status = 1
+        if scenario["mode"] == "controlled_replay":
+            result["task_success"] = None
+            result["performance_evidence"] = False
+            result["capture_status"] = "incomplete_failure_evidence"
+            if shutdown_ok and result.get("protocol_success"):
+                try:
+                    steps = [step for entry in result["repetitions"] for step in entry["result"]["replay_steps"]]
+                    result["capture_verification"] = replay_logits.verify(service.replay_path, steps)
+                    result["capture_status"] = "completed_verified"
+                except Exception as error:
+                    result["capture_error"] = repr(error)
+                    result["protocol_success"] = False
+                    exit_status = 1
         (Path(args.output) / "result.json").write_text(json.dumps(result, indent=2) + "\n")
 
     return exit_status

@@ -195,6 +195,11 @@ int main(void)
     creates = opens = 0;
     CHECK(lunelette_cli_main(argc + 2, selected) == 1);
     CHECK(creates == 1 && opens == 0);
+    selected[argc + 1] = "compact-fp8-lookup";
+    expected_strategy = LUNELETTE_METAL_COMPACT_FP8_LOOKUP;
+    creates = opens = 0;
+    CHECK(lunelette_cli_main(argc + 2, selected) == 1);
+    CHECK(creates == 1 && opens == 0);
     selected[argc + 1] = "bad";
     opens = creates = 0;
     CHECK(lunelette_cli_main(argc + 2, selected) == 1);

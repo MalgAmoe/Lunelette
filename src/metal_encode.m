@@ -58,7 +58,8 @@ int lunelette_metal_project(LuneletteMetalOwner *owner, id<MTLCommandBuffer> com
         return -1;
     }
     id<MTLBuffer> source = owner->weights[weight];
-    if (owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC) {
+    if (owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ||
+        owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP) {
         const lunelette_model_weight *fact =
             &lunelette_model_block_weights[(weight - 2) % LUNELETTE_MODEL_BLOCK_WEIGHTS];
         if (!fact->cols || rows != fact->rows || cols != fact->cols || !source ||
@@ -68,7 +69,9 @@ int lunelette_metal_project(LuneletteMetalOwner *owner, id<MTLCommandBuffer> com
             (count > 1 && owner->conversion_stage.length < (size_t)rows * cols * sizeof(float))) {
             return -1;
         }
-        int operation = count == 1 ? METAL_PROJECT_FP8 : METAL_CONVERT_FP8;
+        int operation = count > 1 ? METAL_CONVERT_FP8 :
+            (owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ?
+                METAL_PROJECT_FP8_LOOKUP : METAL_PROJECT_FP8);
         id<MTLComputePipelineState> pipeline = owner->pipelines[operation];
         if (!pipeline) {
             return -1;

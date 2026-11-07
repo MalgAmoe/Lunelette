@@ -132,7 +132,7 @@ int lunelette_metal_create_pipelines(LuneletteMetalOwner *owner, char *error, si
         return -1;
     }
     NSArray<NSString *> *names = @[@"project", @"norm", @"element", @"rope", @"scores", @"attend",
-        @"convert_fp8", @"project_fp8"];
+        @"convert_fp8", @"project_fp8", @"project_fp8_lookup"];
     for (size_t i = 0; i < METAL_PIPELINE_COUNT; i++) {
         id<MTLFunction> function = [library newFunctionWithName:names[i]];
         if (function) {
@@ -222,8 +222,9 @@ lunelette_metal *lunelette_metal_create_configured(const char *path,
     }
     lunelette_metal_strategy strategy = options ? options->strategy : LUNELETTE_METAL_RESIDENT_FP32;
     if (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
-        strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC) {
-        snprintf(error, capacity, "Metal invalid strategy; select resident-fp32 or compact-fp8-arithmetic");
+        strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+        strategy != LUNELETTE_METAL_COMPACT_FP8_LOOKUP) {
+        snprintf(error, capacity, "Metal invalid strategy; select resident-fp32, compact-fp8-arithmetic or compact-fp8-lookup");
         return NULL;
     }
     @autoreleasepool {
@@ -257,7 +258,8 @@ lunelette_metal *lunelette_metal_create_configured(const char *path,
             goto cleanup;
         }
         for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
-            bool compact = strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+            bool compact = (strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ||
+                strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP) &&
                 staged.weights[i].tensor->dtype == ST_F8_E4M3;
             size_t bytes;
             if (metal_plan_buffer_fits(staged.weights[i].elements,
@@ -287,7 +289,8 @@ lunelette_metal *lunelette_metal_create_configured(const char *path,
             }
         }
         for (size_t i = 0; i < LUNELETTE_METAL_WEIGHT_COUNT; i++) {
-            bool compact = strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+            bool compact = (strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ||
+                strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP) &&
                 staged.weights[i].tensor->dtype == ST_F8_E4M3;
             owner->scales[i] = staged.weights[i].scale;
             owner->weights[i] = [owner->device

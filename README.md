@@ -96,6 +96,9 @@ Select `--metal-strategy compact-fp8-arithmetic` to retain packed projection
 weights: single-token projections reconstruct weights during computation;
 multi-token projections convert through one FP32 stage before MPS/custom work.
 Embedding/head, norms, activations and KV remain FP32. Resident FP32 stays default.
+An opt-in [lookup scalar candidate](docs/fp8-lookup.md),
+`--metal-strategy compact-fp8-lookup`, changes only single-token FP8 decoding;
+it is not a default promotion or a speedup claim.
 See [M4 contracts, validation and measured tradeoff](docs/real-workload-m4.md) and
 [Metal usage, memory, ownership, precision and validation](docs/metal.md).
 
@@ -186,10 +189,11 @@ panel passed2/3 distinct tasks under both reuse policies. Defaults remain256/res
 See [regression tooling](docs/long-context-testing.md) for fresh current-source builds;
 the [HTTP repeat](docs/long-context-http-testing.md) has separate verification scope.
 Protocol-test success is not model task success or performance evidence.
-Native [calculator and frozen-document lookup](docs/native-tool-loop.md) now have
-bounded real-model observations. The [coverage report](docs/real-workload-status.md)
+Native [calculator, frozen-document lookup and saved observations](docs/native-tool-loop.md)
+now have bounded real-model observations. [Version2 workload scenarios](docs/workload-scenarios.md)
+add explicit reuse policy, checkpoint/restore recipes and bounded repetitions. The [coverage report](docs/real-workload-status.md)
 maps the specification to implementation/evidence, preserves task failures and
-lists missing tools, scenario controls and execution strategies.
+lists remaining validation work and execution strategies.
 
 M3 completes the bounded investigation and session/task evaluation, not independent
 numerical acceptance. The [M3 disposition](docs/real-workload-m3.md) restores the

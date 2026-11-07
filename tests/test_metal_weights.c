@@ -157,8 +157,16 @@ int main(int argc, char **argv)
     CHECK(memory.weight_bytes + memory.conversion_stage_bytes == 4750700544ULL);
     CHECK(memory.scratch_bytes == 87819264 && memory.kv_bytes == 54525952);
     CHECK(memory.total_bytes == 4893045760ULL);
+    lunelette_metal_memory arithmetic = memory;
+    CHECK(!lunelette_metal_weights_account(&weights, LUNELETTE_METAL_COMPACT_FP8_LOOKUP, &memory));
+    CHECK(memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP);
+    CHECK(memory.weight_bytes == arithmetic.weight_bytes);
+    CHECK(memory.conversion_stage_bytes == arithmetic.conversion_stage_bytes);
+    CHECK(memory.scratch_bytes == arithmetic.scratch_bytes);
+    CHECK(memory.kv_bytes == arithmetic.kv_bytes);
+    CHECK(memory.total_bytes == arithmetic.total_bytes);
     for (size_t block = 128; block <= 256; block *= 2) {
-        for (int strategy = 0; strategy <= 1; strategy++) {
+        for (int strategy = 0; strategy <= 2; strategy++) {
             CHECK(!lunelette_metal_weights_account_configured(&weights, strategy,
                 (lunelette_metal_limits){4352, block}, &memory));
             CHECK(memory.scratch_bytes == (block == 128 ? 111280640 : 222036992));
@@ -169,7 +177,7 @@ int main(int argc, char **argv)
     }
     CHECK(lunelette_metal_weights_account_configured(&weights, 0,
         (lunelette_metal_limits){4352, 64}, &memory));
-    CHECK(lunelette_metal_weights_account(&weights, (lunelette_metal_strategy)99, &memory));
+    CHECK(lunelette_metal_weights_account(&weights, (lunelette_metal_strategy)3, &memory));
     size_t saved_elements = weights.weights[3].elements;
     weights.weights[3].elements = SIZE_MAX;
     CHECK(lunelette_metal_weights_account(&weights, LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC, &memory));

@@ -244,7 +244,8 @@ int lunelette_metal_weights_account_configured(const lunelette_metal_weights *we
     metal_allocation_plan plan;
     if (metal_plan_create(limits, &plan) || !weights || !memory ||
         (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
-            strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC)) {
+            strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+            strategy != LUNELETTE_METAL_COMPACT_FP8_LOOKUP)) {
         return -1;
     }
     lunelette_metal_memory result = {0};
@@ -256,7 +257,8 @@ int lunelette_metal_weights_account_configured(const lunelette_metal_weights *we
             (tensor->dtype != ST_F8_E4M3 && tensor->dtype != ST_BF16)) {
             return -1;
         }
-        bool compact = strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
+        bool compact = (strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ||
+                strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP) &&
             tensor->dtype == ST_F8_E4M3;
         uint64_t bytes = count * (compact ? 1 : sizeof(float));
         if (bytes > UINT64_MAX - result.weight_bytes) {

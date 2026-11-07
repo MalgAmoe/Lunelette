@@ -11,7 +11,7 @@ static int usage(void)
 {
     return puts("Usage: lunelette --tokenizer TEKKEN --prompt TEXT [--system TEXT] [--raw]\n"
          "       [--weights MODEL.safetensors] [--max-new-tokens N]\n"
-         "       [--metal-prefill mps|custom] [--metal-strategy resident-fp32|compact-fp8-arithmetic]\n"
+         "       [--metal-prefill mps|custom] [--metal-strategy resident-fp32|compact-fp8-arithmetic|compact-fp8-lookup]\n"
          "       [--dump-prompt-ids] [--dump-output-ids]\n"
          "Single-turn 3B text chat; no default system message. Raw: BOS + text.\n"
          "Generation requires the FP8 checkpoint; prompt-ID mode needs no weights.\n"
@@ -144,8 +144,9 @@ int main(int argc, char **argv)
         return 1;
     }
     if (metal_strategy && strcmp(metal_strategy, "resident-fp32") &&
-        strcmp(metal_strategy, "compact-fp8-arithmetic")) {
-        fputs("--metal-strategy must be resident-fp32 or compact-fp8-arithmetic\n", stderr);
+        strcmp(metal_strategy, "compact-fp8-arithmetic") &&
+        strcmp(metal_strategy, "compact-fp8-lookup")) {
+        fputs("--metal-strategy must be resident-fp32, compact-fp8-arithmetic or compact-fp8-lookup\n", stderr);
         return 1;
     }
     if (!path || !prompt || (raw && system) || (!dump && !weights)) {
@@ -201,6 +202,9 @@ int main(int argc, char **argv)
         }
         if (metal_strategy && !strcmp(metal_strategy, "compact-fp8-arithmetic")) {
             metal_options.strategy = LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC;
+        }
+        if (metal_strategy && !strcmp(metal_strategy, "compact-fp8-lookup")) {
+            metal_options.strategy = LUNELETTE_METAL_COMPACT_FP8_LOOKUP;
         }
         metal = lunelette_metal_create_with_options(weights, &metal_options,
             error, sizeof error);

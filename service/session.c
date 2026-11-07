@@ -286,6 +286,53 @@ static int metrics(const service_request *r, int native, char *out, size_t size)
         r->work.logit_restores, r->work.recompute_attempted, r->work.recompute_committed);
 }
 
+/* Planned diagnostic trajectory, including attempts cancelled before publication. */
+static void replay_metadata(const service_request *r, char *output, size_t size)
+{
+    size_t used = 0;
+    output[0] = 0;
+    if (!r->replay_count) {
+        return;
+    }
+    append(output, size, &used,
+        ",\"evaluation_mode\":\"controlled_replay\",\"replay_tokens\":[");
+    for (unsigned i = 0; i < r->replay_count; i++) {
+        append(output, size, &used, "%s%u", i ? "," : "", r->replay_tokens[i]);
+    }
+    append(output, size, &used, "]");
+}
+
+static int replay_sequence(const tj_document *d, unsigned node, unsigned budget,
+                           unsigned tokens[SERVICE_REPLAY_TOKENS])
+{
+    if (!node || d->nodes[node].kind != '"' || !budget || budget > SERVICE_REPLAY_TOKENS) {
+        return 0;
+    }
+    const unsigned char *text = (const unsigned char *)d->nodes[node].text;
+    size_t length = d->nodes[node].length, at = 0;
+    for (unsigned i = 0; i < budget; i++) {
+        unsigned value = 0;
+        if (at == length || text[at] < '1' || text[at] > '9') {
+            return 0;
+        }
+        while (at < length && text[at] >= '0' && text[at] <= '9') {
+            unsigned digit = text[at++] - '0';
+            if (value > (131071u - digit) / 10) {
+                return 0;
+            }
+            value = value * 10 + digit;
+        }
+        if (!(value >= 1000 && value <= 131071) && !(value == 2 && i + 1 == budget)) {
+            return 0;
+        }
+        tokens[i] = value;
+        if (i + 1 < budget && (at == length || text[at++] != ',')) {
+            return 0;
+        }
+    }
+    return at == length;
+}
+
 static void event_locked(service_session *s, const char *type, const char *text,
                          const char *reason)
 {
@@ -295,7 +342,8 @@ static void event_locked(service_session *s, const char *type, const char *text,
     }
     unsigned slot = (s->head + s->count) % SERVICE_EVENTS;
     service_request *r = &s->history[s->active];
-    char measured[SERVICE_METRIC_BYTES] = "null", tool[256];
+    char measured[SERVICE_METRIC_BYTES] = "null", tool[256], replay[256];
+    replay_metadata(r, replay, sizeof(replay));
     tool_metadata(r, tool, sizeof(tool));
     int terminal = strcmp(type, "started") && strcmp(type, "text_delta");
     size_t used = 0;
@@ -306,12 +354,12 @@ static void event_locked(service_session *s, const char *type, const char *text,
              "\"logical_tokens\":%u,\"committed_tokens\":%u,\"pending_tokens\":%u,"
              "\"before_state\":\"%s\",\"before_logical_tokens\":%u,"
              "\"before_committed_tokens\":%u,\"before_pending_tokens\":%u,"
-             "\"state\":\"%s\",\"session_valid\":%s,\"recovery\":\"%s\",\"metrics\":%s%s}\n",
+             "\"state\":\"%s\",\"session_valid\":%s,\"recovery\":\"%s\",\"metrics\":%s%s%s}\n",
              type, r->id, r->session_id, text, reason, r->generated, s->logical,
              s->committed, s->pending, r->before_state, r->before_logical,
              r->before_committed, r->before_pending, s->state,
              !strcmp(s->state, "needs_reset") ? "false" : "true",
-             !strcmp(s->state, "needs_reset") ? "reset" : "none", measured, tool)) {
+             !strcmp(s->state, "needs_reset") ? "reset" : "none", measured, tool, replay)) {
         cancel_locked(s, "overflow");
         return;
     }
@@ -538,7 +586,9 @@ static void *worker(void *context)
             int valid = materialize(s, &receipt);
             /* Quantize once; aggregates are sums of these executed-step samples. */
             uint64_t elapsed_us = (uint64_t)((milliseconds() - tick) * 1000.0);
-            int token = valid ? s->generator.next(s->generator.context) : -1;
+            int token = !valid ? -1 : r->replay_count ?
+                s->generator.replay_next(s->generator.context, r->replay_tokens[r->generated]) :
+                s->generator.next(s->generator.context);
             double available = milliseconds();
             pthread_mutex_lock(&s->lock);
             if (s->generator.work) {
@@ -756,7 +806,10 @@ static void *worker(void *context)
 
 int service_init(service_session *s, service_generator generator)
 {
-    if (generator.native_tools > 3 ||
+    if ((generator.replay_next && (generator.native_tools || !generator.next ||
+         !generator.frame || !generator.piece || generator.eos != 2 ||
+         !generator.materialize || !generator.reset || !generator.destroy)) ||
+        generator.native_tools > 3 ||
         (generator.native_tools && (!generator.tool_frame || !generator.piece ||
          !generator.frame || generator.eos != 2)) ||
         (generator.context_capacity && generator.context_capacity != 256 &&
@@ -1033,9 +1086,10 @@ int service_route(service_session *s, const char *method, const char *path,
                 goto done;
             }
         }
-        char tool[256];
+        char tool[256], replay[256];
         tool_metadata(request, tool, sizeof(tool));
-        if (!append(reply, size, &offset, "]%s}", tool)) {
+        replay_metadata(request, replay, sizeof(replay));
+        if (!append(reply, size, &offset, "]%s%s}", tool, replay)) {
             status = 500;
             error = "reply_capacity";
         }
@@ -1088,7 +1142,8 @@ int service_route(service_session *s, const char *method, const char *path,
         error = "unsupported_operation";
         goto done;
     }
-    const char *fields = !strcmp(op, "/generate") ? "|id||budget|" :
+    const char *fields = !strcmp(op, "/generate") ? (s->generator.replay_next ?
+                             "|id||budget||replay_tokens|" : "|id||budget|") :
                          !strcmp(op, "/messages") ? (s->generator.native_tools ?
                              "|role||content||tool_call_id|" : "|role||content|") :
                          !strcmp(op, "/checkpoint") ? "|id|" :
@@ -1116,6 +1171,15 @@ int service_route(service_session *s, const char *method, const char *path,
             error = "invalid_generation";
             goto done;
         }
+        unsigned replay_tokens[SERVICE_REPLAY_TOKENS], replay_count = 0;
+        if (!control && s->generator.replay_next) {
+            if (!replay_sequence(&d, tj_field(&d, 1, "replay_tokens"), budget, replay_tokens)) {
+                status = 400;
+                error = "invalid_replay_tokens";
+                goto done;
+            }
+            replay_count = budget;
+        }
         char request_id[65];
         for (size_t i = 0; i < d.nodes[id].length; i++) {
             unsigned c = d.nodes[id].text[i];
@@ -1135,6 +1199,11 @@ int service_route(service_session *s, const char *method, const char *path,
                 error = "duplicate_id_existing_request";
                 goto done;
             }
+        }
+        if (replay_count > SERVICE_REPLAY_TOKENS - s->replay_reserved) {
+            status = 503;
+            error = "replay_capture_capacity_restart_required";
+            goto done;
         }
         if (s->job || (strcmp(s->state, "ready") && strcmp(s->state, "partial"))) {
             status = 409;
@@ -1203,6 +1272,9 @@ int service_route(service_session *s, const char *method, const char *path,
         }
         s->active = s->requests++;
         service_request *admitted = &s->history[s->active];
+        admitted->replay_count = replay_count;
+        memcpy(admitted->replay_tokens, replay_tokens, replay_count * sizeof(unsigned));
+        s->replay_reserved += replay_count;
         strcpy(admitted->operation, control ? op + 1 : "generate");
         if (!strcmp(op, "/restore")) {
             admitted->checkpoint_id = s->checkpoint_id;

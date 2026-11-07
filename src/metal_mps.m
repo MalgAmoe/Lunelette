@@ -74,7 +74,8 @@ int lunelette_metal_mps_prepare(LuneletteMetalOwner *owner, size_t count,
             next->inputs[weight] = lunelette_metal_mps_view(owner->buffers[input[p]],
                 count, columns[p]);
             next->weights[weight] = lunelette_metal_mps_view(
-                owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ?
+                (owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC ||
+                owner->memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP) ?
                     owner->conversion_stage : owner->weights[weight],
                 rows[p], columns[p]);
             next->outputs[weight] = lunelette_metal_mps_view(owner->buffers[output[p]],

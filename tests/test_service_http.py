@@ -58,7 +58,7 @@ def runner_faults(directory):
         check(real_workload.main() == 1)
         check(not launch.called)
     # Client selection is passed explicitly, checked against /info and recorded.
-    for selected in (None, "resident-fp32", "compact-fp8-arithmetic"):
+    for selected in (None, "resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"):
         output = Path(directory) / ("select-" + str(selected))
         expected = selected or "resident-fp32"
         argv = ["runner", "--server", "unused", "--scenario", str(native_scenario),
@@ -69,7 +69,8 @@ def runner_faults(directory):
                 patch.object(real_workload, "run", return_value={"protocol_success": True}):
             output.mkdir()
             launch.return_value.close.return_value = True
-            launch.return_value.info = {"execution_strategy": expected, "context_capacity": 256, "prefill_chunk_size": 256}
+            launch.return_value.info = {"execution_strategy": expected, "context_capacity": 256,
+                                        "prefill_chunk_size": 256, "prefix_reuse": "legacy"}
             check(real_workload.main() == 0)
             keywords = launch.call_args.kwargs
             check(keywords["expected_strategy"] == expected)
@@ -84,14 +85,16 @@ def runner_faults(directory):
             "--native-strategy", "compact-fp8-arithmetic"]), \
             patch.object(real_workload, "run", side_effect=RuntimeError("scenario failure")), \
             contextlib.redirect_stderr(io.StringIO()):
-        launch.return_value.info = {"execution_strategy": "compact-fp8-arithmetic", "context_capacity": 256, "prefill_chunk_size": 256}
+        launch.return_value.info = {"execution_strategy": "compact-fp8-arithmetic",
+                                    "context_capacity": 256, "prefill_chunk_size": 256,
+                                    "prefix_reuse": "legacy"}
         launch.return_value.close.return_value = True
         check(real_workload.main() == 1)
         launch.return_value.close.assert_called_once()
         report = json.loads((failed_output / "result.json").read_text())
         check(report["execution_strategy"] == "compact-fp8-arithmetic")
         check(report["protocol_success"] is False and "scenario failure" in report["error"])
-    for selected in ("resident-fp32", "compact-fp8-arithmetic", "invalid"):
+    for selected in ("resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup", "invalid"):
         with patch.object(real_workload, "Service") as launch, patch.object(sys, "argv", [
                 "runner", "--server", "unused", "--scenario", str(native_scenario),
                 "--output", str(Path(directory) / "reject-strategy"), "--native-strategy", selected]), \

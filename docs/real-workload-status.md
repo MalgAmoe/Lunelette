@@ -2,7 +2,7 @@
 
 This is a coverage audit of the [builder specification](real-workload-spec.md),
 not a declaration that every requirement is complete. The persistent service,
-long-context ingestion, prefix controls and two native tools operate in bounded
+long-context ingestion, prefix controls and bounded native tool profiles operate in
 checks. **The full workload specification and independent numerical acceptance
 remain incomplete.** Historical evidence belongs to its recorded source/build,
 not automatically to every later binary.
@@ -13,15 +13,15 @@ not automatically to every later binary.
 |---|---|---|
 | §§2–4 lifecycle/API | One model/session/job, loopback, explicit configuration/readiness, retained requests, cancellation, reset/close; real resident service and model-free transport tests. [M1](real-workload-m1.md), [M2](real-workload-m2.md) | No general platform/concurrency claim; those are not initial requirements. |
 | §5 conversation/pending state | Official native chat and V13 tool framing, generated-ID authority, committed/pending accounting, partial/reset behavior. [Tool guide](native-tool-loop.md) | Tool-mode checkpoints disabled; partial calls require reset, never execution. |
-| §6 prefix controls | Explicit on/off/legacy, materialized checkpoints, restore/rebranch, pending EOS and reset checks; matched real-model comparisons. [M5](real-workload-m5.md) | Main scenario CLI still lacks reuse selection and checkpoint/restore operations. Direct HTTP/Service helper and separate evaluation tooling provide these. |
+| §6 prefix controls | Explicit on/off/legacy, materialized checkpoints, restore/rebranch, pending EOS and reset checks; matched real-model comparisons. [M5](real-workload-m5.md) | [Version2 scenarios](workload-scenarios.md) expose explicit reuse and asynchronous checkpoint/restore. One new-client controlled-replay ON/OFF pair completed two sessions per load and matched eight full finite vectors bitwise; this is native consistency, not independent correctness or task quality. |
 | §7 streaming/failures | UTF-8 buffering, terminal metadata, bounded queues, request-owned disconnect/cancel, worker serialization; real and model-free checks. [M2](real-workload-m2.md), [M6](real-workload-m6.md) | Long HTTP natural-EOS-ready and incomplete-UTF8 conditional branches were not reached in that campaign; other tests are not those same observations. |
 | §8 tools | Bounded native calculator; frozen document lookup; saved observations through the same lookup mechanism. Validated complete call/result/same-session continuation. [Tool guide](native-tool-loop.md) | Three fixed profiles, not arbitrary registration or parallel tools; no live sensor access. Real calculator, lookup→calculator and saved-observation loops completed. Calculator scores pass; stock citation brackets and observation label capitalization fail their frozen exact-output criteria. |
 | §9 context/ingestion | Default256 and opt-in4352, block128/256, checked admission/allocation, chunk cancellation, near-capacity/overflow and real runtime/KV/HTTP evidence. [M6](real-workload-m6.md) | Independent long-context numerical correctness unverified. No silent truncation, fallback or guard weakening. |
-| §10 strategies | Resident FP32 and compact FP8 arithmetic scalar decoding, staged conversion+MPS/custom multi-token projection. [M4](real-workload-m4.md) | Lookup-decoded **weight execution**, shape-specific small-token tiles and paired gate/up projection fusion are not maintained options. Document lookup is unrelated to weight lookup decoding. |
+| §10 strategies | Resident FP32, compact FP8 arithmetic and opt-in [lookup scalar decoding](fp8-lookup.md), with staged conversion+MPS/custom multi-token projection. [M4 control](real-workload-m4.md) | Shape-specific small-token tiles and paired gate/up projection fusion remain unimplemented. One same-binary arithmetic/lookup replay pair matched eight full finite vectors bitwise (two prefix positions repeated four times). No speedup or task-quality claim; document lookup is unrelated. |
 | §11 measurements | Server metrics, client timing, task/check results, bounded tool durations, work counts, source/model identity, named allocations and sampled footprint. [M5](real-workload-m5.md), [M6](real-workload-m6.md) | Samples are not peaks; no energy/general performance acceptance. Legacy captures retain their original metric definitions. Faster failing/truncated tasks are not faster successful work. |
-| §12 reusable scenarios | Versioned lifecycle/generation/cancel/pause scenarios, bounded native tool loops, exact-answer score steps; independent matched-work replay tooling. | No scenario-level repetitions, reuse/checkpoint recipe or general native fixed-token replay mode in the main client. `controlled_protocol_only` is scripted protocol testing, not numerical replay or task quality. |
+| §12 reusable scenarios | Versioned lifecycle/generation/cancel/pause scenarios, bounded native tool loops, exact-answer score steps; independent matched-work replay tooling. | Version2 adds bounded repetitions, explicit reuse and checkpoint recipes under one model load. [Native controlled replay](controlled-replay.md) adds explicit fixed trajectories and full-vector captures/comparison, bounded to16 selections per process; forced outputs never score task success. One real ON/OFF pair matched all eight captured vectors per policy; no broad benchmark claim. `controlled_protocol_only` is scripted protocol testing, not numerical replay or task quality. |
 | §13 gates | Model-free protocol tests; bounded native numerical/state contracts; distinct task scores and failures. [M3](real-workload-m3.md), [M5](real-workload-m5.md), [M6](real-workload-m6.md) | Strict independent-reference mismatches remain unresolved. Native self-consistency is not independent correctness. Operational service ≠ validated numerical baseline. |
-| §14 delivery/report | Service can load once, execute multiple requests or native tool continuations, collect evidence and reset while retaining weights. | Not all specified tools/strategies/scenario controls are delivered. Real M7 tool runs used compact/MPS/legacy only; no tool-loop cross-strategy performance or numerical campaign is claimed. |
+| §14 delivery/report | Service can load once, execute multiple requests or native tool continuations, collect evidence and reset while retaining weights. | Specified execution-strategy candidates and systematic quality comparisons remain incomplete. Real M7 tool runs used compact/MPS/legacy only; no tool-loop cross-strategy performance or numerical campaign is claimed. |
 
 ## Five initial workload families
 
@@ -90,14 +90,17 @@ The saved-observation lookup profile implements the third deterministic tool-dat
 category through existing machinery; the earlier user-input scenario is not its
 substitute. No live sensor subsystem was added.
 
-1. Expose explicit reuse/checkpoint recipes, repetitions and controlled native
-   replay through a reusable scenario contract, or explicitly agree a smaller
-   delivery scope. Current dedicated helpers are evidence, not those missing APIs.
-2. Implement/validate the lookup-decoded scalar candidate before claiming the
-   specified strategy comparison complete. Tiles/fusion remain distinct follow-up
-   candidates; historical experiments do not promote them into maintained code.
+1. Use the delivered version2 controls (reuse/checkpoint/repetitions and bounded
+   native controlled replay) for targeted missing workload coverage: increasing
+   history and scored document-size/chunk comparisons. Avoid resurrecting the
+   suspended broad campaign or treating forced replay as task quality.
+2. Evaluate execution candidates without conflating numerical consistency with
+   speed or successful-task throughput. Lookup scalar execution is now maintained;
+   tiles/fusion remain distinct follow-up candidates. Historical experiments do
+   not promote those follow-ups into maintained code.
 3. Keep numerical-baseline disposition and task quality separate. No automatic
    independent-reference investigation, tolerance change or retry-until-pass follows
    from this audit. Further model checks should answer a specific uncovered question.
-4. Commit reviewed tool/client changes only with explicit approval. Do not interpret
-   an operational demonstration or this coverage report as blanket spec acceptance.
+4. Tool support and version1 scoring were committed as `5932c5e`. Subsequent
+   scenario work still needs its own commit approval. Do not interpret an
+   operational demonstration or this coverage report as blanket spec acceptance.

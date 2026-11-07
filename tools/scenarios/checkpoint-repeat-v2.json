@@ -1,0 +1,18 @@
+{
+  "version": 2,
+  "mode": "free_greedy",
+  "prefix_reuse": "on",
+  "repetitions": 2,
+  "wall_seconds": 120,
+  "operations": [
+    {"op": "create"},
+    {"op": "message", "content": "Reply exactly READY."},
+    {"op": "checkpoint", "id": "save", "checkpoint": "base"},
+    {"op": "generate", "id": "first", "budget": 16},
+    {"op": "score", "id": "first", "text": "READY"},
+    {"op": "restore", "id": "restore", "checkpoint": "base"},
+    {"op": "generate", "id": "second", "budget": 16},
+    {"op": "score", "id": "second", "text": "READY"},
+    {"op": "close"}
+  ]
+}
