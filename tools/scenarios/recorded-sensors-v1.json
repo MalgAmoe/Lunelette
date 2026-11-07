@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "mode": "free_greedy",
+  "operations": [
+    {
+      "op": "create"
+    },
+    {
+      "op": "message",
+      "content": "Synthetic recorded readings (not live sensors): pump-A 84, pump-B 72. Select the hottest device. Output exactly the device label, integer temperature, and ALERT if temperature >=80 else OK, in format '<device> <temperature> <status>'. Output nothing else."
+    },
+    {
+      "op": "generate",
+      "id": "recorded-1",
+      "budget": 32
+    },
+    {
+      "op": "score",
+      "id": "recorded-1",
+      "text": "pump-A 84 ALERT"
+    },
+    {
+      "op": "reset"
+    },
+    {
+      "op": "message",
+      "content": "Synthetic recorded readings (not live sensors): pump-A 70, pump-B 75. Select the hottest device. Output exactly the device label, integer temperature, and ALERT if temperature >=80 else OK, in format '<device> <temperature> <status>'. Output nothing else."
+    },
+    {
+      "op": "generate",
+      "id": "recorded-2",
+      "budget": 32
+    },
+    {
+      "op": "score",
+      "id": "recorded-2",
+      "text": "pump-B 75 OK"
+    },
+    {
+      "op": "reset"
+    },
+    {
+      "op": "pause",
+      "seconds": 1
+    },
+    {
+      "op": "message",
+      "content": "Synthetic recorded readings (not live sensors): pump-A 81, pump-B 89. Select the hottest device. Output exactly the device label, integer temperature, and ALERT if temperature >=80 else OK, in format '<device> <temperature> <status>'. Output nothing else."
+    },
+    {
+      "op": "generate",
+      "id": "recorded-3",
+      "budget": 32
+    },
+    {
+      "op": "score",
+      "id": "recorded-3",
+      "text": "pump-B 89 ALERT"
+    },
+    {
+      "op": "close"
+    }
+  ]
+}

@@ -13,7 +13,13 @@ differed by the base environment's `pip`, not tokenizer dependency versions.
 The shared bootstrap correction preserves the exact original child environment;
 main's corrected offline replay of the retained real artifacts passed, without
 rerunning inference or rewriting the stopped receipt. Subprocess regressions cover
-both launch routes. A fresh full campaign with that correction has not been run.
+both launch routes. A subsequent fresh corrected build/run at commit
+`4d06d326acccfd8201fe38c7d45c1f3b783346a5` passed the full campaign and callback;
+main separately replayed it, checked156 source/25 product pins and14 unchanged
+artifacts. It made35 model calls,2 restores and4621 processed input tokens
+(85 HTTP requests/24 polls, observations rather than fixed contracts). This closes
+the corrected-launch gap without rewriting the earlier stopped receipt. Natural
+EOS-ready and incomplete-UTF8 conditional branches were still not reached.
 This is schedule/state/work smoke evidence, not numerical or task-quality approval.
 
 ## Explicit commands

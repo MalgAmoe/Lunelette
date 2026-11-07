@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "mode": "free_greedy",
+  "operations": [
+    {
+      "op": "create"
+    },
+    {
+      "op": "message",
+      "content": "Look up larch-stock, use calculator to subtract dispatched from opening stock, and answer '<remaining> [<passage_id>]' only."
+    },
+    {
+      "op": "native_investigation_loop",
+      "id": "investigation-v13",
+      "budget": 128,
+      "max_calls": 2,
+      "max_generated": 384,
+      "wall_seconds": 120,
+      "answer": "19 [LARCH-STOCK:P1]"
+    },
+    {
+      "op": "close"
+    }
+  ]
+}

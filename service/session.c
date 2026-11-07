@@ -105,6 +105,114 @@ static int append(char *out, size_t size, size_t *used, const char *format, ...)
     return 1;
 }
 
+/* Decimal integers only; canonical results additionally reject -0. */
+static int bounded_integer(const unsigned char *text, size_t length, uint64_t bound,
+                           int canonical, int64_t *value)
+{
+    size_t i = 0;
+    int negative = length && text[0] == '-';
+    if (negative) {
+        i++;
+    }
+    if (i == length || (text[i] == '0' && ((canonical && negative) || length - i != 1))) {
+        return 0;
+    }
+    uint64_t number = 0;
+    for (; i < length; i++) {
+        unsigned digit = (unsigned)text[i] - '0';
+        if (digit > 9 || number > (bound - digit) / 10) {
+            return 0;
+        }
+        number = number * 10 + digit;
+    }
+    *value = negative ? -(int64_t)number : (int64_t)number;
+    return 1;
+}
+
+static int calculator_arguments(service_request *r)
+{
+    tj_document d = {0};
+    if (!service_json(r->text, strlen(r->text), "|operation||a||b|", &d)) {
+        return 0;
+    }
+    unsigned op = tj_field(&d, 1, "operation");
+    unsigned a = tj_field(&d, 1, "a"), b = tj_field(&d, 1, "b");
+    int64_t av = 0, bv = 0;
+    unsigned operation = op && d.nodes[op].kind == '"' ?
+        (equals(&d.nodes[op], "add") ? 1 : equals(&d.nodes[op], "subtract") ? 2 :
+         equals(&d.nodes[op], "multiply") ? 3 : 0) : 0;
+    int valid = operation && a && b && d.nodes[a].kind == '0' && d.nodes[b].kind == '0' &&
+        bounded_integer(d.nodes[a].text, d.nodes[a].length, 1000000, 0, &av) &&
+        bounded_integer(d.nodes[b].text, d.nodes[b].length, 1000000, 0, &bv);
+    if (valid) {
+        r->tool_operation = operation;
+        r->tool_a = (int)av;
+        r->tool_b = (int)bv;
+    }
+    tj_free(&d);
+    return valid;
+}
+
+static const char *const lookup_documents[] = {"", "larch-stock", "cedar-stock", "pump-readings"};
+static const char *const lookup_passages[] = {
+    "", "LARCH-STOCK:P1", "CEDAR-STOCK:P1", "PUMP-READINGS:P1"
+};
+
+static int lookup_arguments(service_request *r, unsigned profile)
+{
+    tj_document d = {0};
+    if (!service_json(r->text, strlen(r->text), "|document_id|", &d)) {
+        return 0;
+    }
+    unsigned id = tj_field(&d, 1, "document_id");
+    unsigned document = id && d.nodes[id].kind == '"' ?
+        (equals(&d.nodes[id], lookup_documents[1]) ? 1 :
+         equals(&d.nodes[id], lookup_documents[2]) ? 2 :
+         equals(&d.nodes[id], lookup_documents[3]) ? 3 : 0) : 0;
+    tj_free(&d);
+    if (!((profile == 2 && document >= 1 && document <= 2) ||
+          (profile == 3 && document == 3))) {
+        document = 0;
+    }
+    r->tool_document = document;
+    return document != 0;
+}
+
+static int lookup_result(const service_request *r, const tj_node *content)
+{
+    tj_document d = {0};
+    if (content->length > 2048 || !service_json(content->text, content->length,
+            "|document_id||passage_id||text|", &d)) {
+        return 0;
+    }
+    unsigned id = tj_field(&d, 1, "document_id");
+    unsigned passage = tj_field(&d, 1, "passage_id");
+    unsigned text = tj_field(&d, 1, "text");
+    int valid = r->tool_document >= 1 && r->tool_document <= 3 && id && passage && text &&
+        d.nodes[id].kind == '"' && d.nodes[passage].kind == '"' &&
+        d.nodes[text].kind == '"' && d.nodes[text].length && d.nodes[text].length <= 1024 &&
+        equals(&d.nodes[id], lookup_documents[r->tool_document]) &&
+        equals(&d.nodes[passage], lookup_passages[r->tool_document]);
+    tj_free(&d);
+    return valid;
+}
+
+/* Small terminal metadata, never argument text deltas or unvalidated JSON. */
+static void tool_metadata(const service_request *r, char *output, size_t size)
+{
+    output[0] = 0;
+    if (r->tool_kind == 2 && r->tool_document && !strcmp(r->stop_reason, "tool_call")) {
+        snprintf(output, size, ",\"tool_call\":{\"id\":\"%s\",\"name\":\"lookup\","
+            "\"arguments\":{\"document_id\":\"%s\"}}", r->id,
+            lookup_documents[r->tool_document]);
+    } else if (r->tool_operation && !strcmp(r->stop_reason, "tool_call")) {
+        const char *names[] = {"", "add", "subtract", "multiply"};
+        snprintf(output, size, ",\"tool_call\":{\"id\":\"%s\",\"name\":\"calculator\","
+            "\"arguments\":{\"operation\":\"%s\",\"a\":%d,\"b\":%d}}",
+            r->id, names[r->tool_operation], r->tool_a, r->tool_b);
+    }
+}
+
 static void cancel_locked(service_session *s, const char *source)
 {
     service_request *r = &s->history[s->active];
@@ -187,7 +295,8 @@ static void event_locked(service_session *s, const char *type, const char *text,
     }
     unsigned slot = (s->head + s->count) % SERVICE_EVENTS;
     service_request *r = &s->history[s->active];
-    char measured[SERVICE_METRIC_BYTES] = "null";
+    char measured[SERVICE_METRIC_BYTES] = "null", tool[256];
+    tool_metadata(r, tool, sizeof(tool));
     int terminal = strcmp(type, "started") && strcmp(type, "text_delta");
     size_t used = 0;
     if ((terminal && !metrics(r, s->generator.info != NULL, measured, sizeof(measured))) ||
@@ -197,12 +306,12 @@ static void event_locked(service_session *s, const char *type, const char *text,
              "\"logical_tokens\":%u,\"committed_tokens\":%u,\"pending_tokens\":%u,"
              "\"before_state\":\"%s\",\"before_logical_tokens\":%u,"
              "\"before_committed_tokens\":%u,\"before_pending_tokens\":%u,"
-             "\"state\":\"%s\",\"session_valid\":%s,\"recovery\":\"%s\",\"metrics\":%s}\n",
+             "\"state\":\"%s\",\"session_valid\":%s,\"recovery\":\"%s\",\"metrics\":%s%s}\n",
              type, r->id, r->session_id, text, reason, r->generated, s->logical,
              s->committed, s->pending, r->before_state, r->before_logical,
              r->before_committed, r->before_pending, s->state,
              !strcmp(s->state, "needs_reset") ? "false" : "true",
-             !strcmp(s->state, "needs_reset") ? "reset" : "none", measured)) {
+             !strcmp(s->state, "needs_reset") ? "reset" : "none", measured, tool)) {
         cancel_locked(s, "overflow");
         return;
     }
@@ -405,6 +514,7 @@ static void *worker(void *context)
             continue;
         }
         unsigned budget = s->budget;
+        unsigned tool_phase = 0; /* 1 name, 2 arguments; partial calls require reset. */
         double started = milliseconds();
         r->memory_before = s->generator.info ? service_process_footprint() : 0;
         r->prompt = s->logical;
@@ -474,6 +584,40 @@ static void *worker(void *context)
             s->pending = 1;
             r->token_ids[r->generated++] = (unsigned)token;
             budget--;
+            if (s->generator.native_tools) {
+                if ((unsigned)token == 9 && !s->assistant_started && r->generated == 1) {
+                    s->assistant_started = 1;
+                    tool_phase = 1;
+                    continue;
+                }
+                s->assistant_started = 1;
+                if (tool_phase == 1 && (unsigned)token == 32 &&
+                    !s->utf8_length && ((s->generator.native_tools != 3 &&
+                     !strcmp(r->text, "calculator")) ||
+                     (s->generator.native_tools >= 2 && !strcmp(r->text, "lookup")))) {
+                    r->tool_kind = !strcmp(r->text, "lookup") ? 2 : 1;
+                    r->text[0] = 0;
+                    tool_phase = 2;
+                    continue;
+                }
+                if ((unsigned)token == eos && tool_phase) {
+                    if (tool_phase == 2 && !s->utf8_length &&
+                        (r->tool_kind == 2 ? lookup_arguments(r, s->generator.native_tools) :
+                         calculator_arguments(r))) {
+                        reason = "tool_call";
+                    } else {
+                        terminal = "error";
+                        reason = "invalid_tool_call";
+                    }
+                    break;
+                }
+                /* Tekken ordinary vocabulary starts at 1000. Never decode specials. */
+                if ((unsigned)token < 1000 && (unsigned)token != eos) {
+                    terminal = "error";
+                    reason = "unsupported_output_token";
+                    break;
+                }
+            }
             if ((unsigned)token == eos) {
                 if (s->utf8_length) {
                     terminal = "error";
@@ -545,7 +689,9 @@ static void *worker(void *context)
                 raw[complete] = 0;
                 quote_text(raw, escaped);
                 memcpy(r->text + old, raw, complete + 1);
-                event_locked(s, "text_delta", escaped, "none");
+                if (!tool_phase) {
+                    event_locked(s, "text_delta", escaped, "none");
+                }
             }
         }
         /* A terminal event also needs a slot. Even an exactly full queue must
@@ -558,8 +704,17 @@ static void *worker(void *context)
             terminal = "cancelled";
             reason = "cancelled";
         }
+        if (tool_phase && !strcmp(reason, "budget")) {
+            terminal = "error";
+            reason = "truncated_tool_call";
+        }
         if (!strcmp(terminal, "completed")) {
-            strcpy(s->state, !strcmp(reason, "eos") ? "ready" : "partial");
+            if (!strcmp(reason, "tool_call")) {
+                strcpy(s->state, "awaiting_tool");
+                s->outstanding_tool = s->active + 1;
+            } else {
+                strcpy(s->state, !strcmp(reason, "eos") ? "ready" : "partial");
+            }
         } else {
             strcpy(s->state, "needs_reset");
             /* Controller invalidity must invalidate the adapter checkpoint too. */
@@ -569,6 +724,9 @@ static void *worker(void *context)
                 s->generator.invalidate(s->generator.context);
             }
             pthread_mutex_lock(&s->lock);
+        }
+        if (tool_phase) {
+            r->text[0] = 0;
         }
         r->total_ms = milliseconds() - started;
         if (r->cancel_received_ms) {
@@ -598,7 +756,10 @@ static void *worker(void *context)
 
 int service_init(service_session *s, service_generator generator)
 {
-    if ((generator.context_capacity && generator.context_capacity != 256 &&
+    if (generator.native_tools > 3 ||
+        (generator.native_tools && (!generator.tool_frame || !generator.piece ||
+         !generator.frame || generator.eos != 2)) ||
+        (generator.context_capacity && generator.context_capacity != 256 &&
          generator.context_capacity != SERVICE_CONTEXT_MAX) ||
         (generator.block_capacity && generator.block_capacity != 256 &&
          !(generator.context_capacity == SERVICE_CONTEXT_MAX && generator.block_capacity == 128))) {
@@ -676,6 +837,7 @@ static void reset_locked(service_session *s)
         pthread_cond_wait(&s->wake, &s->lock);
     }
     s->checkpoint_id = s->checkpoint_length = 0;
+    s->outstanding_tool = s->assistant_started = 0;
     s->framing_ms = 0;
     s->logical = s->committed = s->pending = s->utf8_length = 0;
     strcpy(s->state, "ready");
@@ -826,7 +988,9 @@ int service_route(service_session *s, const char *method, const char *path,
             snapshot.pending = s->pending;
         }
         request = &snapshot;
-        quote_text(request->text, text);
+        int buffered_call = s->generator.native_tools && request->generated &&
+            request->token_ids[0] == 9;
+        quote_text(buffered_call ? "" : request->text, text);
         if (strlen(text) + 1000 > size) {
             status = 500;
             error = "reply_capacity";
@@ -869,7 +1033,9 @@ int service_route(service_session *s, const char *method, const char *path,
                 goto done;
             }
         }
-        if (!append(reply, size, &offset, "]}")) {
+        char tool[256];
+        tool_metadata(request, tool, sizeof(tool));
+        if (!append(reply, size, &offset, "]%s}", tool)) {
             status = 500;
             error = "reply_capacity";
         }
@@ -923,7 +1089,8 @@ int service_route(service_session *s, const char *method, const char *path,
         goto done;
     }
     const char *fields = !strcmp(op, "/generate") ? "|id||budget|" :
-                         !strcmp(op, "/messages") ? "|role||content|" :
+                         !strcmp(op, "/messages") ? (s->generator.native_tools ?
+                             "|role||content||tool_call_id|" : "|role||content|") :
                          !strcmp(op, "/checkpoint") ? "|id|" :
                          !strcmp(op, "/restore") ? "|id||checkpoint_id|" : "";
     if (!service_json_profile(body, length, fields, &d, context_capacity(s) > 256)) {
@@ -932,7 +1099,8 @@ int service_route(service_session *s, const char *method, const char *path,
         goto done;
     }
     int control = !strcmp(op, "/checkpoint") || !strcmp(op, "/restore");
-    if (control && (!s->generator.prefix_reuse || !s->generator.save || !s->generator.restore)) {
+    if (control && (s->generator.native_tools || !s->generator.prefix_reuse ||
+                    !s->generator.save || !s->generator.restore)) {
         status = 501;
         error = "unsupported_operation";
         goto done;
@@ -1081,6 +1249,53 @@ int service_route(service_session *s, const char *method, const char *path,
             error = "invalid_message";
             goto done;
         }
+        unsigned call_id = tj_field(&d, 1, "tool_call_id");
+        if (s->generator.native_tools && equals(&d.nodes[role], "tool")) {
+            if (strcmp(s->state, "awaiting_tool") || !s->outstanding_tool) {
+                status = 409;
+                error = "no_outstanding_tool_call";
+                goto done;
+            }
+            service_request *call = &s->history[s->outstanding_tool - 1];
+            if (!call_id || d.nodes[call_id].kind != '"' ||
+                !equals(&d.nodes[call_id], call->id)) {
+                status = 409;
+                error = "tool_call_id_mismatch";
+                goto done;
+            }
+            int64_t result;
+            if (!(call->tool_kind == 2 ? lookup_result(call, &d.nodes[content]) :
+                    bounded_integer(d.nodes[content].text, d.nodes[content].length,
+                                    1000000000000ULL, 1, &result))) {
+                status = 400;
+                error = "invalid_tool_result";
+                goto done;
+            }
+            unsigned framed[SERVICE_CONTEXT_MAX], count = context_capacity(s) - s->logical;
+            double tick = milliseconds();
+            if (!s->generator.tool_frame(s->generator.context, d.nodes[content].text,
+                    d.nodes[content].length, framed, &count)) {
+                status = 422;
+                error = "framing_or_context_overflow";
+                goto done;
+            }
+            if (size < 512 + 7 * (size_t)(s->logical + count)) {
+                status = 500;
+                error = "reply_capacity";
+                goto done;
+            }
+            memcpy(s->tokens + s->logical, framed, count * sizeof(*framed));
+            s->logical += count;
+            s->framing_ms += milliseconds() - tick;
+            s->outstanding_tool = s->assistant_started = 0;
+            strcpy(s->state, "ready");
+            goto snapshot;
+        }
+        if (call_id) {
+            status = 400;
+            error = "unexpected_tool_call_id";
+            goto done;
+        }
         if (!equals(&d.nodes[role], "user")) {
             status = s->generator.frame || equals(&d.nodes[role], "tool_result") ? 501 : 400;
             error = "unsupported_role"; goto done;
@@ -1113,6 +1328,7 @@ int service_route(service_session *s, const char *method, const char *path,
             }
             memcpy(s->tokens + s->logical, framed, count * sizeof(*framed));
             s->logical += count;
+            s->assistant_started = 0;
             s->framing_ms = milliseconds() - frame_start;
             goto snapshot;
         }

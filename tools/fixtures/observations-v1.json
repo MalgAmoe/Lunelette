@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "document_id": "pump-readings",
+      "passage_id": "PUMP-READINGS:P1",
+      "text": "Synthetic recorded observation (not live): pump-A temperature 84 C; pump-B temperature 72 C."
+    }
+  ]
+}

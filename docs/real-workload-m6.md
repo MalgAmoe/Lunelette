@@ -201,4 +201,8 @@ A [current-source real-HTTP repeat](long-context-http-testing.md) is also availa
 The promoted seven-cell run passed. The HTTP child completed; its initial campaign
 stopped on an offline environment-census mismatch. Corrected offline replay passed
 on the retained data; the stopped receipt remains unchanged. See the HTTP document
-for the precise correction and remaining full-launch verification gap. No defaults or memory guards are promoted or weakened.
+for the precise correction and subsequent fresh full-launch pass at commit
+`4d06d326acccfd8201fe38c7d45c1f3b783346a5`. The earlier stopped receipt remains
+historical evidence; the corrected-launch gap is closed. No defaults or memory
+guards are promoted or weakened. The [current coverage report](real-workload-status.md)
+separates later tool/client additions from these source-bound M6 observations.

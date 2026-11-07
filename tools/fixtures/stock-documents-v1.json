@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "documents": [
+    {
+      "document_id": "larch-stock",
+      "passage_id": "LARCH-STOCK:P1",
+      "text": "Opening stock: 31 units. Dispatched: 12 units."
+    },
+    {
+      "document_id": "cedar-stock",
+      "passage_id": "CEDAR-STOCK:P1",
+      "text": "Opening stock: 80 units. Dispatched: 5 units."
+    }
+  ]
+}

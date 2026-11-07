@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "mode": "free_greedy",
+  "operations": [
+    {
+      "op": "create"
+    },
+    {
+      "op": "message",
+      "content": "Use lookup to read pump-readings. Report the hottest device, its integer temperature, and ALERT if temperature is at least 80 else OK. Answer exactly <device> <temperature> <status>."
+    },
+    {
+      "op": "native_observation_loop",
+      "id": "observation-v13",
+      "budget": 128,
+      "max_calls": 1,
+      "max_generated": 256,
+      "wall_seconds": 120,
+      "answer": "pump-A 84 ALERT"
+    },
+    {
+      "op": "close"
+    }
+  ]
+}

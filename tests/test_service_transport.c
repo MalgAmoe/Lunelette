@@ -65,7 +65,10 @@ int main(void)
     /* Conservative incremental census: all 16 inputs, whole long tokenizer
      * workspace (not merely its delta), parser copy, generation/prefix work,
      * both pairs of ledgers, extra stack, plus 1 MiB rounding/allocator slack. */
-    size_t incremental_host = CLIENTS * (size_t)(262144 - BODY_LIMIT) +
+    /* Also charge conservative padded bounds for native-tool history/controller
+     * fields; the guard and its allowance remain unchanged. */
+    size_t tool_control_allowance = SERVICE_IDS * (size_t)32 + 128;
+    size_t incremental_host = tool_control_allowance + CLIENTS * (size_t)(262144 - BODY_LIMIT) +
         2293792 + 262145 + 2 * 34816 + 4 * (4352 - 256) * sizeof(unsigned) +
         100000 + 1048576;
     metal_allocation_plan plan;

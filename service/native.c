@@ -19,6 +19,7 @@ typedef struct {
     unsigned capacity, block, target, pending_position, recompute_length, recompute_hint;
     int ingesting, rebuilding;
     int pending, boundary;
+    unsigned tools;
     unsigned policy, saved_length, saved_prefix[SERVICE_CONTEXT_MAX];
     lunelette_metal_checkpoint *checkpoint;
     service_work work;
@@ -110,8 +111,22 @@ static int native_frame(void *context, const unsigned char *text, size_t length,
                         int initial, unsigned *output, unsigned *capacity)
 {
     native_service *n = context;
+    if (n->tools) {
+        return (n->tools == 3 ? service_frame_observation :
+            n->tools == 2 ? service_frame_investigation : service_frame_tools)(
+            n->tokenizer, text, length, n->capacity > 256 ? 32768 : 4096, initial, 0, output, capacity);
+    }
     return service_frame_with_limit(n->tokenizer, text, length,
         n->capacity > 256 ? 32768 : 4096, initial, output, capacity);
+}
+
+static int native_tool_frame(void *context, const unsigned char *text, size_t length,
+                             unsigned *output, unsigned *capacity)
+{
+    native_service *n = context;
+    return (n->tools == 3 ? service_frame_observation :
+            n->tools == 2 ? service_frame_investigation : service_frame_tools)(
+        n->tokenizer, text, length, 4096, 0, 1, output, capacity);
 }
 
 static int native_piece(void *context, unsigned id, unsigned char *output, size_t *capacity)
@@ -244,6 +259,9 @@ static int native_save(void *context)
     native_service *n = context;
     char error[512];
     lunelette_metal_checkpoint *replacement = NULL;
+    if (n->tools) {
+        return 0;
+    }
     if (!n->logits || !n->length || n->pending) {
         return -1;
     }
@@ -269,7 +287,7 @@ static int native_restore(void *context)
     native_service *n = context;
     char error[512];
     memset(&n->work, 0, sizeof(n->work));
-    if (!n->saved_length) {
+    if (n->tools || !n->saved_length) {
         return 0;
     }
     if (n->policy == 2) {
@@ -345,7 +363,7 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
 {
     const char *model = NULL, *tokenizer = NULL, *prefill = NULL, *strategy_name = NULL;
     int context = 0, chunk = 0, port_seen = 0;
-    unsigned policy = 0;
+    unsigned policy = 0, tools = 0;
     for (int i = 1; i < argc; i += 2) {
         if (i + 1 == argc) {
             return 0;
@@ -368,6 +386,11 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         } else if (!strcmp(key, "--prefix-reuse") && !policy &&
                    (!strcmp(value, "on") || !strcmp(value, "off"))) {
             policy = !strcmp(value, "on") ? 1 : 2;
+        } else if (!strcmp(key, "--tools") && !tools &&
+                   (!strcmp(value, "calculator-v13") || !strcmp(value, "investigation-v13") ||
+                    !strcmp(value, "observation-v13"))) {
+            tools = !strcmp(value, "observation-v13") ? 3 :
+                !strcmp(value, "investigation-v13") ? 2 : 1;
         } else if (!strcmp(key, "--port") && !port_seen) {
             char *end;
             if (!*value || strspn(value, "0123456789") != strlen(value)) {
@@ -397,6 +420,7 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         return 0;
     }
     n->policy = policy;
+    n->tools = tools;
     n->capacity = (unsigned)context;
     n->block = (unsigned)chunk;
     if (context == 256 && chunk != 256) {
@@ -450,9 +474,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         "\"context_capacity\":%u,\"prefill_chunk_size\":%u,\"event_bytes\":8192,"
         "\"long_context_validation\":\"%s\","
         "\"long_context_validation_document\":\"docs/real-workload-m6.md\","
-        "\"conversation_protocol\":\"native-no-system-nonthinking-text-v1\","
+        "\"conversation_protocol\":\"%s\","
         "\"checkpoint_payload_bytes_per_handle\":524288,\"checkpoint_transient_payload_bound_bytes\":1048576,"
-        "\"tools\":false,\"checkpoints\":%s,\"reuse_new_turn\":%s,\"prefix_reuse\":\"%s\","
+        "\"tools\":%s,\"checkpoints\":%s,\"reuse_new_turn\":%s,\"prefix_reuse\":\"%s\","
         "\"prefix_reuse_validation\":\"%s\","
         "\"prefix_reuse_validation_scope\":\"published source-bound evidence; no runtime attestation\","
         "\"checkpoint_validation_document\":\"docs/real-workload-m5.md\","
@@ -475,7 +499,11 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
             (options.prefill == LUNELETTE_METAL_PREFILL_MPS ? "MPS" : "precise-FP32"),
         n->capacity, n->block,
         n->capacity > 256 ? "external_evidence_only" : "not_applicable",
-        policy ? "true" : "false", policy == 1 ? "true" : "false",
+        tools == 3 ? "native-observation-v13" :
+        tools == 2 ? "native-investigation-v13" :
+            tools ? "native-calculator-v13" : "native-no-system-nonthinking-text-v1",
+        tools ? "true" : "false",
+        policy && !tools ? "true" : "false", policy == 1 ? "true" : "false",
         policy == 1 ? "on" : policy == 2 ? "off" : "legacy",
         policy ? "external_evidence_only" : "not_applicable",
         memory.strategy ? "compact published evidence only; no runtime attestation" :
@@ -491,6 +519,7 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
     *generator = (service_generator){
         .context = n, .next = native_next, .materialize = native_materialize,
         .reset = native_reset, .destroy = native_destroy, .frame = native_frame,
+        .native_tools = tools, .tool_frame = tools ? native_tool_frame : NULL,
         .piece = native_piece, .eos = 2, .info = n->info, .prefix_reuse = policy,
         .begin = native_begin, .save = native_save, .restore = native_restore,
         .invalidate = native_invalidate, .work = native_work,

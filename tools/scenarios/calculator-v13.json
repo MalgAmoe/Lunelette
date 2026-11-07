@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "mode": "free_greedy",
+  "operations": [
+    {
+      "op": "create"
+    },
+    {
+      "op": "message",
+      "content": "Use the calculator to compute 19 + 24, then report the answer only."
+    },
+    {
+      "op": "native_tool_loop",
+      "id": "calculator-v13",
+      "budget": 128,
+      "max_calls": 2,
+      "max_generated": 384,
+      "wall_seconds": 120,
+      "answer": 43
+    },
+    {
+      "op": "close"
+    }
+  ]
+}

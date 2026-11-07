@@ -36,10 +36,15 @@ typedef struct {
     int (*materialize)(void *context, const unsigned *tokens, unsigned length);
     void (*reset)(void *context);
     void (*destroy)(void *context);
-    /* Optional native text-only policy. Immutable CPU callbacks; frame runs idle
-     * under the session lock, piece runs on the worker. EOS defaults to 256. */
+    /* Optional native framing policy. Immutable CPU callbacks; frame/tool_frame
+     * run idle under the session lock, piece runs on the worker. EOS defaults to 256. */
     int (*frame)(void *, const unsigned char *, size_t, int, unsigned *, unsigned *);
     int (*piece)(void *, unsigned, unsigned char *, size_t *);
+    /* Opt-in V13 profile: 1 calculator, 2 investigation, 3 observation. tool_frame appends 7 text 8;
+     * it never executes a model.
+     * output/capacity unchanged on failure, capacity is exact count on success. */
+    unsigned native_tools;
+    int (*tool_frame)(void *, const unsigned char *, size_t, unsigned *, unsigned *);
     unsigned eos;
     const char *info;
     /* Immutable policy: 0 legacy, 1 reuse on, 2 strict recompute off.
@@ -59,6 +64,9 @@ typedef struct {
     int (*materialize_step)(void *, const unsigned *, unsigned, unsigned *);
 } service_generator;
 typedef struct {
+    unsigned tool_kind, tool_document; /* 1 calculator, 2 lookup; document 1/2 stock, 3 pump-readings. */
+    int tool_a, tool_b;
+    unsigned tool_operation; /* 0 absent, 1 add, 2 subtract, 3 multiply; terminal only. */
     char operation[16];
     uint64_t checkpoint_id;
     int cache_restored;
@@ -85,6 +93,7 @@ typedef struct {
     service_generator generator;
     unsigned session, logical, committed, pending, tokens[SERVICE_CONTEXT_MAX], budget;
     unsigned requests, active;
+    unsigned assistant_started, outstanding_tool; /* history index + 1; zero absent */
     char state[16];
     service_request history[SERVICE_IDS];
     char events[SERVICE_EVENTS][SERVICE_EVENT_BYTES];

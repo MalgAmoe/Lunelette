@@ -11,6 +11,9 @@ import sys
 import time
 import threading
 
+from workload_tools import run_loop, validate_operation
+import native_workload_tools
+
 
 def strict_object(pairs):
     result = {}
@@ -31,13 +34,30 @@ def load_scenario(path, context=256):
         raise ValueError("operations must be bounded list")
     fields = {"create": set(), "message": {"content"}, "generate": {"id", "budget"},
               "continue": {"id", "budget"}, "cancel": {"id", "budget"},
-              "pause": {"seconds"}, "reset": set(), "close": set()}
-    for op in value["operations"]:
-        if not isinstance(op, dict) or op.get("op") not in fields:
+              "pause": {"seconds"}, "reset": set(), "close": set(),
+              "score": {"id", "text"},
+              "tool_loop": {"id", "budget", "max_calls", "max_generated", "wall_seconds", "answer"}}
+    fields["native_tool_loop"] = fields["tool_loop"]
+    fields["native_investigation_loop"] = fields["tool_loop"]
+    fields["native_observation_loop"] = fields["tool_loop"]
+    for index, op in enumerate(value["operations"]):
+        if not isinstance(op, dict) or not isinstance(op.get("op"), str) or op["op"] not in fields:
             raise ValueError("unknown operation")
+        if op["op"] in {"native_tool_loop", "native_investigation_loop", "native_observation_loop"}:
+            native_workload_tools.validate_operation(op)
+        if op["op"] == "tool_loop":
+            validate_operation(op)
         required = fields[op["op"]]
         if not required <= op.keys() or set(op) - required - {"op", "expect"}:
             raise ValueError("invalid operation fields")
+        if op["op"] == "score":
+            previous = value["operations"][index - 1] if index else {}
+            if (value["mode"] != "free_greedy" or "expect" in op
+                    or not isinstance(op["text"], str)
+                    or len(op["text"].encode("utf-8")) > 4096
+                    or previous.get("op") not in {"generate", "continue"}
+                    or previous.get("id") != op["id"]):
+                raise ValueError("score requires immediate matching generation in free_greedy")
         if "expect" in op:
             if not isinstance(op["expect"], dict) or set(op["expect"]) - {
                     "text", "state", "logical_tokens", "committed_tokens", "pending_tokens", "event"}:
@@ -174,8 +194,18 @@ class Service:
                                   ensure_ascii=False) + "\n")
         self.log.flush()
 
+    def bounded_timeout(self, seconds):
+        deadline = getattr(self, "absolute_deadline", None)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("application wall deadline exceeded")
+            return min(seconds, remaining)
+        return seconds
+
     def connect(self):
-        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=4)
+        return http.client.HTTPConnection("127.0.0.1", self.port,
+                                          timeout=self.bounded_timeout(4))
 
     def request(self, method, path, body=None):
         connection = self.connect()
@@ -184,9 +214,13 @@ class Service:
         self.record("send", method=method, path=path, body=body)
         try:
             connection.request(method, path, payload, {"Content-Length": str(len(payload))})
+            transport_socket = getattr(connection, "sock", None)
             response = connection.getresponse()
+            if transport_socket is not None:
+                transport_socket.settimeout(self.bounded_timeout(4))
             raw = response.read()
-            result = json.loads(raw)
+            self.bounded_timeout(4)
+            result = json.loads(raw, object_pairs_hook=strict_object)
             self.record("response", status=response.status, raw=raw.decode(), elapsed=time.monotonic() - sent)
             return response.status, result
         except BaseException as error:
@@ -198,7 +232,7 @@ class Service:
     def generate(self, session, request_id, budget, cancel=False):
         connection = self.connect()
         if getattr(self, "native", False):
-            connection.timeout = self.request_seconds
+            connection.timeout = self.bounded_timeout(self.request_seconds)
         path = f"/sessions/{session}/generate"
         body = json.dumps({"id": request_id, "budget": budget}).encode()
         sent = time.monotonic()
@@ -210,6 +244,8 @@ class Service:
         # Fixed test generator reaches EOS within ten one-second ticks. This
         # is a diagnostic transport deadline, not a real-model latency limit.
         deadline = sent + getattr(self, "request_seconds", 15)
+        if getattr(self, "absolute_deadline", None) is not None:
+            deadline = min(deadline, self.absolute_deadline)
         try:
             connection.request("POST", path, body)
             transport_socket = getattr(connection, "sock", None)
@@ -266,7 +302,9 @@ class Service:
                         text += event["text"]
             if raw_line or not events or events[-1]["event"] not in {"completed", "cancelled", "error"}:
                 raise RuntimeError("missing complete terminal event")
-            result = {**events[-1], "text": text, "first_actual_text_seconds": first_text,
+            result = {**events[-1], "text": text,
+                      "text_delta_count": sum(e["event"] == "text_delta" for e in events),
+                      "terminal_text": events[-1]["text"], "first_actual_text_seconds": first_text,
                       "completion_seconds": time.monotonic() - sent,
                       "cancel_ack_seconds": cancel_ack_seconds,
                       "cancel_completion_seconds": cancel_completion_seconds}
@@ -329,14 +367,44 @@ def run(service, scenario):
         raise ValueError("scenario mode must match explicit native/test launch")
     session = None
     start = time.monotonic()
+    request_ids = set()
+    tool_reports = []
+    task_checks = []
+    previous_generation = None
+
+    def reserve_id(request_id):
+        if request_id in request_ids:
+            raise ValueError("duplicate request id")
+        request_ids.add(request_id)
+
     for op in scenario["operations"]:
         action = op["op"]
         service.record("operation", operation=op)
-        if action == "pause":
+        if action == "score":
+            completed_turn = (previous_generation.get("event") == "completed"
+                              and previous_generation.get("stop_reason") == "eos"
+                              and previous_generation.get("state") == "ready")
+            result = {"request_id": op["id"], "expected_text": op["text"],
+                      "actual_text": previous_generation["text"],
+                      "completed_turn": completed_turn,
+                      "success": completed_turn and previous_generation["text"] == op["text"]}
+            task_checks.append(result)
+            service.record("task_check", **result)
+        elif action in {"tool_loop", "native_tool_loop", "native_investigation_loop", "native_observation_loop"}:
+            loop = native_workload_tools.run_loop if action != "tool_loop" else run_loop
+            result = loop(service, session, op, reserve_id)
+            tool_reports.append(result)
+            if not result["protocol_success"]:
+                return {**result, "mode": scenario["mode"], "tool_loops": tool_reports,
+                        "task_checks": task_checks,
+                        "performance_evidence": False}
+        elif action == "pause":
             time.sleep(op["seconds"])
             result = {}
         elif action in {"generate", "continue", "cancel"}:
+            reserve_id(op["id"])
             result = service.generate(session, op["id"], op["budget"], action == "cancel")
+            previous_generation = result
             expected_terminal = op.get("expect", {}).get(
                 "event", "cancelled" if action == "cancel" else "completed")
             if result.get("event") != expected_terminal:
@@ -358,7 +426,12 @@ def run(service, scenario):
         for key, expected in op.get("expect", {}).items():
             if result.get(key) != expected:
                 raise ValueError(f"{action}: {key}: expected {expected!r}, got {result.get(key)!r}")
-    return {"protocol_success": True, "task_success": None, "mode": scenario["mode"],
+    return {"protocol_success": True,
+            "task_success": (all(r["task_success"] for r in tool_reports)
+                             and all(r["success"] for r in task_checks))
+                            if tool_reports or task_checks else None,
+            "task_checks": task_checks,
+            "tool_loops": tool_reports, "mode": scenario["mode"],
             "duration_seconds": time.monotonic() - start, "performance_evidence": False}
 
 
@@ -389,6 +462,15 @@ def main():
                            "--prefill", args.native_prefill]
         if (scenario["mode"] == "free_greedy") != (native_args is not None):
             raise ValueError("scenario mode must match explicit native/test launch")
+        profiles = {op["op"] for op in scenario["operations"]
+                    if op["op"] in {"native_tool_loop", "native_investigation_loop", "native_observation_loop"}}
+        if len(profiles) > 1:
+            raise ValueError("mixed native tool profiles")
+        if profiles:
+            if native_args is None:
+                raise ValueError("native tool loop requires native launch")
+            native_args += ["--tools", "observation-v13" if "native_observation_loop" in profiles else
+                           "investigation-v13" if "native_investigation_loop" in profiles else "calculator-v13"]
         if native_args is None:
             service = Service(args.server, args.output)
         else:
@@ -409,7 +491,9 @@ def main():
         result["execution_strategy"] = service.info["execution_strategy"]
     try:
         result.update(run(service, scenario))
-    except BaseException as error:
+        if not result["protocol_success"]:
+            exit_status = 1
+    except Exception as error:
         service.record("failure", error=repr(error))
         result["error"] = repr(error)
         exit_status = 1
