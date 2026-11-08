@@ -161,10 +161,13 @@ measurements under the [M3 conditions](docs/real-workload-m3.md#m4-entry-conditi
 Known unchanged strict reference failures remain documented, not automatically a
 reason for another tracing campaign or an indefinite engineering blocker.
 
-## Real-workload service development
+## Real-workload service
 
-The [builder specification](docs/real-workload-spec.md) defines the next phase;
-it is a target, not a list of completed features. The
+The [builder specification](docs/real-workload-spec.md)'s agreed operational
+diagnostic scope is delivered; independent numerical acceptance remains FAIL/open.
+The [interactive adapter](docs/interactive-workload.md) supports persistent agent-led
+exploration, streamed or complete answers, controls and retained evidence. See the
+[closeout checklist](docs/spec-closeout-checklist.md) for scope and limitations. The
 [delivery plan](docs/real-workload-plan.md) and
 [M1 protocol guide](docs/real-workload-m1.md) describe the model-free foundation.
 The [M2 service guide](docs/real-workload-m2.md) covers real resident execution.

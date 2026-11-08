@@ -1,18 +1,29 @@
 # Real-workload specification coverage
 
-This is a coverage audit of the [builder specification](real-workload-spec.md),
-not a declaration that every requirement is complete. The persistent service,
-long-context ingestion, prefix controls and bounded native tool profiles operate in
-checks, and the operational definition of done has bounded demonstrations.
-**Final specification acceptance has not been agreed; independent numerical
-acceptance remains FAIL/open.** Historical evidence belongs to its recorded
-source/build, not automatically to every later binary.
+The agreed **operational diagnostic test-system scope is delivered** against the
+[builder specification](real-workload-spec.md), including the final
+[interactive agent adapter](interactive-workload.md). Persistent service,
+long-context ingestion, prefix controls, bounded native tools and adaptive sessions
+have bounded evidence. **Independent numerical acceptance remains FAIL/open.**
+This is not an independently validated engine or a general model-quality claim.
+Historical evidence belongs to its recorded source/build, not automatically to
+every later binary.
 
 For acceptance decisions rather than another campaign, see the
 [spec closeout checklist](spec-closeout-checklist.md) and
 [evidence-only numerical review](numerical-closeout-review.md). The checklist
 distinguishes operational delivery from validated-baseline status, and narrow
 coverage from new requirements that the original spec does not impose.
+
+## Interactive closeout
+
+The [bounded native adapter session](interactive-workload.md#bounded-native-verification)
+used one load and dynamically chosen follow-ups, retained an actual five-event
+summary, and exercised live generation inspect/cancel, reset, checkpoint/restore
+and clean shutdown. Two of three prospective task checks passed; the longer summary
+had correct facts but four bullets instead of three. That failure was preserved.
+Fixed tools, plain-chat checkpoints and deferred optimization limits remain explicit;
+no independent numerical gate was relaxed.
 
 ## Requirement map
 
@@ -100,9 +111,9 @@ substitute. No live sensor subsystem was added.
 1. Version2 controls now have a [bounded scored document/history comparison](useful-workload-panel.md)
    across compact arithmetic/lookup and chunks128/256, plus a separately authorized
    resident follow-up at both chunks. All six bounded configurations have successful
-   results; the original resident refusal remains preserved. Agree any additional
-   summary/longer-response example explicitly; broad reliability studies and sweeps
-   are not mandatory initial gates. Do not retry automatically, resurrect the
+   results; the original resident refusal remains preserved. The final interactive
+   session adds a genuinely aggregating85-token summary, with its formatting failure
+   retained. Broad reliability studies and sweeps are not mandatory initial gates. Do not retry automatically, resurrect the
    suspended broad campaign or treat replay as quality.
 2. Evaluate execution candidates without conflating numerical consistency with
    speed or successful-task throughput. Lookup scalar execution is now maintained;
@@ -114,4 +125,4 @@ substitute. No live sensor subsystem was added.
 4. Tool support/version1 scoring were committed as `5932c5e`; reviewed version2
    controls, native controlled replay and lookup were committed with approval as
    `d88541d`. No defaults were promoted and nothing was pushed. Do not interpret
-   operational demonstrations or this coverage report as blanket spec acceptance.
+   operational diagnostic delivery as independent numerical or blanket quality acceptance.

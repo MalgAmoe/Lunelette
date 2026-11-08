@@ -11,6 +11,7 @@ import threading
 import time
 
 from real_workload import AdmissionError, Service, strict_object
+from workload_scenarios import ControlFailure
 import native_workload_tools
 
 LINE_BYTES = 262144
@@ -80,8 +81,9 @@ class Output:
 
 
 class Adapter:
-    def __init__(self, service, emit, budget):
+    def __init__(self, service, emit, budget, text_events=True):
         self.service, self.emit, self.remaining = service, emit, budget
+        self.text_events = text_events
         self.session = self.saved = self.worker = self.active = None
         self.ids = set()
         self.ids_lock = threading.Lock()
@@ -191,7 +193,7 @@ class Adapter:
                                         adapter.active = request_id
                                     def event_callback(event):
                                         adapter.started_event(request_id, event)
-                                        if event["event"] == "text_delta":
+                                        if event["event"] == "text_delta" and adapter.text_events:
                                             adapter.emit({"id": identity, "request_id": request_id,
                                                           "event": "text", "text": event["text"]})
                                     try:
@@ -204,15 +206,15 @@ class Adapter:
                                 tool_operation(op), self.reserve)
                             if not result["protocol_success"]:
                                 self.failed = True
-                            self.final(identity, ok=result["protocol_success"], stats=result)
+                            self.final(identity, ok=result["protocol_success"], text=result.get("answer", ""), stats=result)
                             return
                         result = self.service.generate(self.session, identity, budget,
                             on_event=lambda event: (self.started_event(identity, event),
                                 self.emit({"id": identity, "event": "text", "text": event["text"]})
-                                if event["event"] == "text_delta" else None))
+                                if event["event"] == "text_delta" and self.text_events else None))
                         if result["event"] == "error":
                             self.failed = True
-                        self.final(identity, ok=result["event"] != "error", stats={
+                        self.final(identity, ok=result["event"] != "error", text=result.get("text", ""), stats={
                             k: result.get(k) for k in ("event", "generated_tokens", "stop_reason",
                                 "state", "completion_seconds", "first_actual_text_seconds", "metrics")})
                     except AdmissionError as error:
@@ -246,7 +248,21 @@ class Adapter:
                     raise ValueError("checkpoints not supported")
                 if action == "restore" and self.saved is None:
                     raise ValueError("no published checkpoint")
-                result = self.service.control(self.session, action, identity, self.saved)
+                status, before = self.service.request("GET", path)
+                if status != 200:
+                    raise RuntimeError(before)
+                if before.get("state") in {"needs_reset", "closed"}:
+                    raise ValueError("session requires reset before checkpoint/restore")
+                try:
+                    result = self.service.control(self.session, action, identity, self.saved)
+                except ControlFailure as error:
+                    detail = error.args[0] if error.args else None
+                    # Only an explicit admission refusal is recoverable. A failure
+                    # after admission may have changed state and remains fatal.
+                    if (isinstance(detail, tuple) and len(detail) == 4
+                            and detail[:3] == ("POST", path + "/" + action, 409)):
+                        raise ValueError(f"control admission rejected (409): {detail[3]}") from error
+                    raise
                 if action == "checkpoint":
                     self.saved = result
                 status = 200
@@ -279,6 +295,8 @@ def main():
     parser.add_argument("--tools", choices=["calculator", "investigation", "observation"])
     parser.add_argument("--seconds", type=int, default=300)
     parser.add_argument("--total-budget", type=int, default=1024)
+    parser.add_argument("--text-events", choices=["live", "none"], default="live",
+                        help="none emits complete answers at final, useful for agent transports")
     args = parser.parse_args()
     if not 1 <= args.seconds <= 1800 or not 1 <= args.total_budget <= 4096:
         parser.error("seconds 1..1800; total-budget 1..4096")
@@ -320,7 +338,7 @@ def main():
             for key, value in expected.items():
                 if service.info.get(key) != value:
                     raise RuntimeError(f"native /info {key} mismatch: expected {value!r}")
-        adapter = Adapter(service, output.emit, args.total_budget)
+        adapter = Adapter(service, output.emit, args.total_budget, args.text_events == "live")
         output.emit({"event": "ready", "info": service.info})
         pending = bytearray()
         count = 0

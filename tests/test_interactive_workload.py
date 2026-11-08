@@ -32,7 +32,7 @@ class Fake:
         self.started.set()
         self.done.wait(2)
         on_event({'event': 'text_delta', 'text': 'hi'})
-        return {'event': 'cancelled', 'generated_tokens': 1}
+        return {'event': 'cancelled', 'generated_tokens': 1, 'text': 'hi'}
 
 
 class Tests(unittest.TestCase):
@@ -66,6 +66,61 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'already used'):
             adapter.dispatch({'op': 'inspect', 'id': 'a'})
 
+    def test_final_answer_without_text_events(self):
+        fake, events = Fake(), []
+        fake.done.set()
+        adapter = Adapter(fake, events.append, 2, text_events=False)
+        adapter.dispatch({'op': 'create', 'id': 's'})
+        adapter.dispatch({'op': 'generate', 'id': 'g', 'budget': 2})
+        adapter.worker.join(2)
+        self.assertIsNone(adapter.fatal)
+        self.assertFalse(any(e['event'] == 'text' for e in events))
+        self.assertEqual(events[-1]['text'], 'hi')
+        self.assertEqual(events[-1]['stats']['event'], 'cancelled')
+
+    def test_tool_final_text(self):
+        fake, events = Fake(), []
+        fake.native = True
+        fake.info = {'tools': True, 'conversation_protocol': 'native-calculator-v13'}
+        adapter = Adapter(fake, events.append, 2, text_events=False)
+        adapter.session = 1
+        with patch('interactive_workload.native_workload_tools.run_loop',
+                   return_value={'protocol_success': True, 'answer': '43'}):
+            adapter.dispatch({'id': 't', 'op': 'tools', 'profile': 'calculator',
+                              'max_generated': 2})
+            adapter.worker.join(2)
+        self.assertIsNone(adapter.fatal)
+        self.assertEqual(events[-1]['text'], '43')
+
+    @unittest.skipUnless(SERVER, 'supply existing no-weight protocol server')
+    def test_process_final_text_mode(self):
+        script = str(Path(__file__).resolve().parents[1] / 'tools/interactive_workload.py')
+        with tempfile.TemporaryDirectory() as directory:
+            process = subprocess.Popen([sys.executable, script, '--server', SERVER,
+                '--output', str(Path(directory) / 'quiet'), '--test-only',
+                '--text-events', 'none', '--seconds', '5'], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            try:
+                self.assertEqual(json.loads(process.stdout.readline())['event'], 'ready')
+                for op in [{'id': 's', 'op': 'create'},
+                           {'id': 'm', 'op': 'message', 'content': 'hello'},
+                           {'id': 'g', 'op': 'generate', 'budget': 2}]:
+                    process.stdin.write((json.dumps(op) + '\n').encode())
+                    process.stdin.flush()
+                    event = json.loads(process.stdout.readline())
+                    self.assertEqual(event['id'], op['id'])
+                    self.assertEqual(event['event'], 'final')
+                    self.assertTrue(event['ok'])
+                self.assertTrue(event['text'])
+                process.stdin.close()
+                self.assertEqual(process.wait(timeout=10), 0, process.stderr.read())
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait()
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    stream.close()
+
     def test_tool_schema_mapping(self):
         from interactive_workload import tool_operation
         for profile, answer in [('calculator', 43), ('investigation', '19 [LARCH-STOCK:P1]'),
@@ -93,6 +148,27 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'corrupt'):
             adapter.dispatch({'id': 'bad', 'op': 'checkpoint'})
         adapter.dispatch({'id': 'i', 'op': 'inspect'})
+
+    def test_control_state_and_admission_rejections(self):
+        from workload_scenarios import ControlFailure
+        fake = Fake()
+        fake.info = {'checkpoints': True, 'prefix_reuse': 'on'}
+        fake.request = Mock(return_value=(200, {'state': 'needs_reset'}))
+        fake.control = Mock()
+        adapter = Adapter(fake, lambda e: None, 2)
+        adapter.session = 1
+        with self.assertRaisesRegex(ValueError, 'requires reset'):
+            adapter.dispatch({'id': 'c1', 'op': 'checkpoint'})
+        fake.control.assert_not_called()
+        fake.request.return_value = (200, {'state': 'ready'})
+        fake.control.side_effect = ControlFailure(('POST', '/sessions/1/checkpoint',
+                                                   409, {'error': 'checkpoint_boundary_required'}))
+        with self.assertRaisesRegex(ValueError, 'admission rejected'):
+            adapter.dispatch({'id': 'c2', 'op': 'checkpoint'})
+        adapter.dispatch({'id': 'i', 'op': 'inspect'})
+        fake.control.side_effect = ControlFailure(('GET', '/requests/c3', 409, {}))
+        with self.assertRaises(ControlFailure):
+            adapter.dispatch({'id': 'c3', 'op': 'checkpoint'})
 
     def test_tool_transition_cancel(self):
         fake, events = Fake(), []

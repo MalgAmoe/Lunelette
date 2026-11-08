@@ -65,7 +65,12 @@ Stdout contains only JSON lines: an initial `ready` with service info, live `tex
 events carrying the originating command `id`, and a compact `final` with `ok` and
 `stats` or `result`. Tool text also includes its underlying `request_id`. Generation
 stats include terminal event, token count, stop reason, state, latency and native
-metrics when supplied. Text events are delivered after Service validates event
+metrics when supplied. Generation finals also include the complete `text`. For
+agent transports expecting one response per command, `--text-events none` suppresses
+stdout text deltas, not their validation or retained raw evidence. Generation stays
+asynchronous; match responses by ID when inspecting or cancelling an active request.
+The default `--text-events live` retains live stdout text. Text events are delivered
+after Service validates event
 identity, ordering and text, but before final retained-result/ledger checks; they
 are provisional evidence, not proof that the whole request passed. Callback
 exceptions abort the stream and adapter. A disconnect/EOF can leave no final event.
@@ -92,8 +97,11 @@ cancel and allow up to three seconds for the worker's real terminal/error before
 terminating the child; errors are retained and yield nonzero exit, not a fabricated
 clean terminal. Signals and fatal transport failures interrupt the owned child
 immediately. Unsupported checkpoint capability or restore without a saved receipt
-is a recoverable ID-bearing `final` with `ok:false`; corrupt control responses remain
-fatal. Adapter fatal errors are recorded in `client.ndjson` when the log permits,
+is a recoverable ID-bearing `final` with `ok:false`. A `needs_reset`/closed state or
+explicit HTTP409 control admission refusal is also recoverable; reset clears the
+saved checkpoint receipt. Corrupt responses or failures after control admission
+remain fatal. Checkpoint/restore themselves are synchronous bounded controls;
+inspect/cancel responsiveness applies to generation, not an in-progress control. Adapter fatal errors are recorded in `client.ndjson` when the log permits,
 independently of child cleanup.
 
 ## Restricted native tools
@@ -148,3 +156,51 @@ competing mutations, live inspect/cancel, streamed text, EOF during generation,
 idle deadline, signal handling, broken/slow output refusal and exclusive evidence
 roots under normal and optimized Python. Native tool execution, actual model
 latency/quality and GPU cleanup require separate explicitly authorized validation.
+
+## Bounded native verification
+
+One source-pinned adapter snapshot used the retained clean `d88541d` engine binary
+with compact arithmetic/MPS, context4352/chunk256 and prefix reuse ON. Engine source
+was unchanged; defaults were not promoted. Adapter snapshot SHA256:
+`ba7887593563917e26d8e536f0ff0aeb47c126f644061a328712d9b0bbdcebe7`.
+A subsequent control-admission recovery guard has model-free verification, not an
+additional model run. Current model-free coverage:27 interactive tests normally
+and under optimized Python;96 workload tests (seven socket skips covered by direct
+runs), plus actual CPU-stub control rejection/save/restore checks. Main also ran
+core, scenario and replay regression targets.
+
+The agent chose follow-ups after observing answers and metrics, recording each
+criterion before generation. One load,20 commands,320 reserved generated tokens,
+113 actually generated,268.674s through shutdown including agent idle time:
+
+| Request | Generated tokens | Outcome |
+|---|---:|---|
+| Initial recorded-log extraction |24|Correct latest recovered76 and peak84 |
+| Adaptive five-event/two-pump summary |85|Facts correct; **failed** required three-bullet format by producing four |
+| New triage question |4|Exact `pump-B`, passed |
+| Intentional cancellation probe |0|Cancelled; no task-quality score |
+
+All three scored generations reached EOS/ready without extension. The second
+message followed a31.147s pause. Factual judgments were manual against prospective
+criteria; exact label and bullet count were checked mechanically. No repaired
+rerun, broad accuracy claim or comparative performance claim follows.
+
+The cancellation probe was inspected while generating, explicitly cancelled, and
+ended in `needs_reset` (312.403ms cancellation latency). Reset was required and
+invalidated the earlier checkpoint. A new12-token prefix was saved/restored,
+inspected and reset: same-prefix restore, not divergent-history restore in this
+session. Zero generated tokens did not mean zero work: the cancelled suffix
+executed27 model tokens. Total executed model tokens, including controls, were339.
+
+Independent offline checks reconstructed official message frames and decoded
+outputs from authoritative IDs; reconciled stream/retained text, complete ledgers,
+state and work; and rejected deliberately corrupted text/ledger evidence. Adapter
+and owned server exited0; a process scan found no owned server remaining. This is
+process cleanup evidence, not independent GPU-driver leak instrumentation.
+
+Native tool mode was not enabled in this adapter session. Its new adapter path has
+model-free coverage and historical underlying-handler evidence, not a new live
+integration claim. Named memory was5,899,678,720 bytes; maximum observed footprint
+sample6,038,884,384 bytes is **not a peak**. Independent numerical validation remains
+FAIL/open; no new reference comparison was performed. Operational diagnostic scope
+is delivered, not an independently validated baseline.
