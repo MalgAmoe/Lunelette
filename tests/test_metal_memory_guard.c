@@ -61,6 +61,17 @@ static int run(fake *f, uint64_t weights, const char *message)
 
 int main(void)
 {
+    uint64_t bytes = 123;
+    CHECK(!metal_memory_available_bytes(100, 20, 16384, &bytes));
+    CHECK(bytes == 120 * 16384); /* Speculative pages are a subset of the 100 free. */
+    CHECK(!metal_memory_available_bytes(0, 0, 4096, &bytes) && bytes == 0);
+    CHECK(!metal_memory_available_bytes(UINT64_MAX, 0, 1, &bytes));
+    CHECK(bytes == UINT64_MAX);
+    CHECK(metal_memory_available_bytes(UINT64_MAX, 1, 1, &bytes));
+    CHECK(metal_memory_available_bytes(UINT64_MAX, 0, 2, &bytes));
+    CHECK(metal_memory_available_bytes(1, 1, 0, &bytes));
+    CHECK(metal_memory_available_bytes(1, 1, 1, NULL));
+    CHECK(bytes == UINT64_MAX); /* Failure cannot publish a partial estimate. */
     const uint64_t overhead = 310ULL * 1024 * 1024 + 2ULL * 1024 * 1024 * 1024;
     const size_t contexts[] = {256, 4352, 4352};
     const size_t blocks[] = {256, 256, 128};

@@ -4,6 +4,22 @@
 #include <stdint.h>
 #include <stdio.h>
 
+/* Mach free_count already includes speculative pages (vm_statistics.h).
+ * Output is unchanged on failure; retain inactive pages in the existing estimate. */
+static inline int metal_memory_available_bytes(uint64_t free_pages, uint64_t inactive_pages,
+                                               uint64_t page_size, uint64_t *available)
+{
+    if (!available || !page_size || free_pages > UINT64_MAX - inactive_pages) {
+        return -1;
+    }
+    uint64_t pages = free_pages + inactive_pages;
+    if (pages > UINT64_MAX / page_size) {
+        return -1;
+    }
+    *available = pages * page_size;
+    return 0;
+}
+
 /* Private, model-free seam. Sleep may return early (including EINTR); every
  * iteration checks the original monotonic budget before another query. */
 typedef struct {

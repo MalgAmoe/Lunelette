@@ -937,13 +937,8 @@ static int memory_available(void *context, uint64_t *available)
     if (statistics_status != KERN_SUCCESS || page_status != KERN_SUCCESS) {
         return -1;
     }
-    uint64_t pages = (uint64_t)statistics.free_count + statistics.inactive_count +
-        statistics.speculative_count;
-    if (page_size == 0 || pages > UINT64_MAX / page_size) {
-        return -1;
-    }
-    *available = pages * page_size;
-    return 0;
+    return metal_memory_available_bytes(statistics.free_count, statistics.inactive_count,
+                                        page_size, available);
 }
 
 static int memory_now(void *context, uint64_t *now)
