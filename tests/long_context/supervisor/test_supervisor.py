@@ -1,4 +1,3 @@
-import copy
 import fcntl
 import json
 from pathlib import Path

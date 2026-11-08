@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Live HTTP regressions; intentionally separate from model-free native core-test."""
-import http.client
 import json
 from pathlib import Path
 import socket

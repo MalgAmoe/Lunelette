@@ -10,7 +10,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 HERE = ROOT/'tests/long_context/http'
 sys.path.insert(0, str(HERE))
-from build import build, verify, safe_path, pin
+from build import build, verify, safe_path
 
 
 def python_check(path):

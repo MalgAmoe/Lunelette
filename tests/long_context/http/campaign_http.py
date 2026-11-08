@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 
 from build import ROOT, HERE, pin, verify
-from driver import Driver, require
+from driver import require
 
 CELL = 'D-256-mps-compact-fp8-arithmetic'
 

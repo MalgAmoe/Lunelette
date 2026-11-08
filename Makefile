@@ -24,6 +24,7 @@ python-test:
 	$(PYTHON) -B -m unittest discover -s tests -p 'test_*workload*.py'
 	$(PYTHON) -B -m unittest discover -s tests -p 'test_replay_logits.py'
 	$(PYTHON) -B -m unittest discover -s tests -p 'test_fp8_lookup.py'
+	$(PYTHON) -B -m unittest discover -s tests -p 'test_tokenizer_generate_unicode.py'
 interactive-test: $(BUILD)/test_service_server
 	$(PYTHON) -B tests/test_interactive_workload.py ./$(BUILD)/test_service_server
 entrypoint-test:

@@ -3,7 +3,7 @@ import math
 import struct
 import subprocess
 import unittest
-from schedule import schedule, HERE
+from schedule import schedule
 from check import trace, vector
 
 

@@ -24,7 +24,6 @@ def environment():
                 limitation='installed package contents are not pinned')
 
 
-HERE = Path(__file__).resolve().parent
 TOKENIZER_HASH = '600bb27946565481ecf51ba8aee252e49b9a68507866080ac9c30185bb312843'
 
 

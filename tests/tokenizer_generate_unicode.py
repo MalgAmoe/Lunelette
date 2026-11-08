@@ -1,10 +1,12 @@
 """Generate property runs; no regex implementation code is copied.
 Requires the existing regex 2026.9.29 (Unicode 18.0.0) environment.
-Usage: python generate_unicode.py /path/to/src/tokenizer_unicode.h
+Usage: python tests/tokenizer_generate_unicode.py /path/to/src/tokenizer_unicode.h
 """
 import sys
 import regex
-assert regex.__version__ == '2026.9.29'
+if getattr(regex, '__version__', None) != '2026.9.29':
+    raise RuntimeError('Unicode generation requires regex==2026.9.29; found '
+                       + repr(getattr(regex, '__version__', None)))
 props = [regex.compile(r'\A\p{%s}\Z' % p) for p in
          ['L', 'Lu', 'Lt', 'Lm', 'Lo', 'M', 'Ll', 'N', 'White_Space']]
 runs = []

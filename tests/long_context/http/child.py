@@ -1,21 +1,17 @@
 """Serial D supervisor. Execution authorized; no model validation claimed."""
-import argparse
 from contextlib import ExitStack
 import json
 from pathlib import Path
 import socket
 import signal
 import subprocess
-import sys
 import time
 import threading
-import hashlib
 def reserve(extra):
     total = sum(p.stat().st_size for p in Path.cwd().rglob('*') if p.is_file())
     if total + extra > 64 * 1024 * 1024:
         raise ValueError('HTTP aggregate artifact cap')
 
-AUTHORIZED = True
 
 
 def child(args):

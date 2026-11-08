@@ -1,5 +1,4 @@
 """Seven serial cells; default inspection does not open model inputs."""
-import argparse
 import hashlib
 import importlib.util
 import json
