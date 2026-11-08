@@ -24,6 +24,7 @@ This optional workflow builds the native server, then runs the existing C/CLI/GP
 | `service-test` | C protocol/transport and Python HTTP checks with deterministic test server |
 | `shader-facts-test` | Python/compiler checks of embedded model constants, no Metal execution |
 | `dependency-test` | macOS build/dry-run dependency checks; compiles but does not run Metal tests |
+| `build-identity-test` | Requires Git and POSIX shell tools; disposable Git fixture and recording compiler; checks both service recipes without GPU, models or Python; included in `core-test` |
 | `entrypoint-test` | Inspect Make schedules to guard host/GPU boundaries and convenience aliases; dry-run only |
 
 Python unit discovery can skip tests requiring an explicitly supplied service or tokenizer. A green unit suite is not proof that all HTTP integration cases ran. `interactive-test` covers the adapter's optional deterministic-server tests; other native-stub/tokenizer integrations remain separate targets below. `PYTHON` can select the interpreter for the new Python/interactive entrypoints, for example `make python-test PYTHON='python3 -O'`. Existing specialized targets retain their own interpreter settings.
@@ -40,6 +41,8 @@ make BUILD=build/check-protocol interactive-test service-test
 ```
 
 To constrain sanitizers to host-only execution, use the same sanitizer flags with `host-test`, not `test`. Existing `make sanitize` uses `build/sanitize` and runs the full `test` target, including GPU tests. Do not try to suppress a target's recipe while leaving its GPU prerequisites active.
+
+Service builds recheck `SERVICE_COMMIT` and `SERVICE_DIRTY` each invocation using a content-stable `$(BUILD)/service-identity` input. Both service binaries rebuild when either effective value changes, not when it stays unchanged. Command-line overrides remain supported (for example `make server SERVICE_COMMIT=release SERVICE_DIRTY=false`). Without Git metadata the existing fallback is `unknown` / `false`.
 
 ## Optional supplied-data checks
 

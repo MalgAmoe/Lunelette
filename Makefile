@@ -200,6 +200,14 @@ SERVICE_SOURCES = service/session.c src/tokenizer_json.c
 SERVICE_HEADERS = service/session.h src/tokenizer_json.h
 SERVICE_COMMIT = $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 SERVICE_DIRTY = $(shell test -z "$$(git status --porcelain 2>/dev/null)" && echo false || echo true)
+# Recheck on every invocation, but invalidate consumers only on content changes.
+.PHONY: service-identity-force build-identity-test
+$(BUILD)/service-identity: service-identity-force tools/update_service_identity.sh | $(BUILD)
+	sh tools/update_service_identity.sh "$@" '$(SERVICE_COMMIT)' '$(SERVICE_DIRTY)'
+$(BUILD)/test_service_server: $(BUILD)/service-identity
+build-identity-test:
+	sh tests/test_build_identity.sh
+core-test: build-identity-test
 $(BUILD)/test_service_server: service/http.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"$(SERVICE_COMMIT)"' -DSERVICE_DIRTY='"$(SERVICE_DIRTY)"' $(LDFLAGS) service/http.c $(SERVICE_SOURCES) -o $@ -pthread
 $(BUILD)/test_service_session: tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
@@ -225,7 +233,7 @@ service-test: service-protocol-test $(BUILD)/test_service_server $(BUILD)/test_s
 	python3 tests/test_service_http.py ./$(BUILD)/test_service_server
 
 ifeq ($(shell uname -s),Darwin)
-$(BUILD)/lunelette-server: service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c | $(BUILD)
+$(BUILD)/lunelette-server: $(BUILD)/service-identity service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_NATIVE -DSERVICE_COMMIT='"$(SERVICE_COMMIT)"' -DSERVICE_DIRTY='"$(SERVICE_DIRTY)"' $(METAL_TARGET) $(LDFLAGS) service/http.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ -pthread $(LDLIBS) $(METAL_LIBS)
 endif
 
