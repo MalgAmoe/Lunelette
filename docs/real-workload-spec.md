@@ -1,9 +1,6 @@
 # Builder spec: Lunelette real-workload test system
 
-User-provided specification, with a subsequent compact-optimization amendment in
-§10 and §15. The original operational diagnostic delivery is recorded in the
-[coverage report](real-workload-status.md); the later optimization trials are research, not an integration commitment.
-Their outcomes and stop decisions are recorded in that coverage report. This specification is not a statement of implemented capabilities.
+User-provided specification, with a subsequent compact-optimization amendment in §10 and §15. The original operational diagnostic delivery is recorded in the [coverage report](real-workload-status.md); the later optimization trials are research, not an integration commitment. Their outcomes and stop decisions are recorded in that coverage report. This specification is not a statement of implemented capabilities.
 
 ## 1. Objective
 
@@ -294,13 +291,7 @@ Requirements:
 
 Do not include the tested half-reduction policies or the current naïve MPP kernel in the initial workload comparison. They remain separate research candidates.
 
-For subsequent optimization, **compact residency is the target**, not permanently
-expanded resident-FP32 weights. Compare compact arithmetic, compact lookup and new
-compact candidates. Bounded reusable expansion scratch is permitted, with its full
-memory and conversion cost charged. A resident-FP32 reference may be used when it
-answers a specific validation/comparison question; it is not a required cell in
-every experiment or an optimization target. No runtime default changes follow
-from this direction. See §15 for the new experiments.
+For subsequent optimization, **compact residency is the target**, not permanently expanded resident-FP32 weights. Compare compact arithmetic, compact lookup and new compact candidates. Bounded reusable expansion scratch is permitted, with its full memory and conversion cost charged. A resident-FP32 reference may be used when it answers a specific validation/comparison question; it is not a required cell in every experiment or an optimization target. No runtime default changes follow from this direction. See §15 for the new experiments.
 
 ## 11. Measurement contract
 
@@ -397,8 +388,7 @@ Before declaring the system a validated comparison baseline:
 
 - Resolve or explicitly disposition those mismatches.
 - Use independent fixtures from the exact current checkpoint.
-- Preserve the existing finite comparison criterion:
-  `abs(error) <= 2e-4 + 1e-4 * abs(reference)`.
+- Preserve the existing finite comparison criterion: `abs(error) <= 2e-4 + 1e-4 * abs(reference)`.
 - Keep raw mismatches.
 - Do not silently widen tolerances.
 
@@ -451,100 +441,40 @@ Not required initially: concurrent inference, batching, remote deployment, authe
 
 ### Objective and boundaries
 
-Improve complete-workload latency while retaining compact weight residency.
-This is new experimental scope, not a reopened requirement of the delivered
-operational service. It adds no backend framework, model, precision policy or
-context-capacity extension. Independent numerical acceptance remains FAIL/open.
+Improve complete-workload latency while retaining compact weight residency. This is new experimental scope, not a reopened requirement of the delivered operational service. It adds no backend framework, model, precision policy or context-capacity extension. Independent numerical acceptance remains FAIL/open.
 
-Use current-checkpoint compact arithmetic and compact lookup as controls. Lookup's
-observed decode advantage is not a universal whole-task ranking. An initial
-full-engine control may explicitly select compact lookup, MPS, context4352,
-chunk256 and reuse ON; record all settings and use matched settings for candidates.
-Keep defaults and memory admission guards unchanged.
+Use current-checkpoint compact arithmetic and compact lookup as controls. Lookup's observed decode advantage is not a universal whole-task ranking. An initial full-engine control may explicitly select compact lookup, MPS, context 4352, chunk 256 and reuse ON; record all settings and use matched settings for candidates. Keep defaults and memory admission guards unchanged.
 
-Permanent full-model FP32 expansion is excluded from candidate designs. Existing
-FP32 embedding/head, activations, norms, residuals and KV remain unchanged. Permit
-bounded reusable per-projection expansion or tile scratch, not an unbounded cache
-of expanded matrices. Declare allocation/lifetime bounds before execution and
-report any additional scratch against the compact control. Faster execution bought
-with more scratch must be reported as a latency/memory tradeoff, not a free gain.
+Permanent full-model FP32 expansion is excluded from candidate designs. Existing FP32 embedding/head, activations, norms, residuals and KV remain unchanged. Permit bounded reusable per-projection expansion or tile scratch, not an unbounded cache of expanded matrices. Declare allocation/lifetime bounds before execution and report any additional scratch against the compact control. Faster execution bought with more scratch must be reported as a latency/memory tradeoff, not a free gain.
 
 ### A. Better MPP/TensorOps projections
 
 Investigate two distinct steps, rather than changing everything at once:
 
-1. **Staged MPP:** retain compact weights and the existing bounded FP32 conversion
-   stage; test a materially improved tiled/cooperative MPP multiplication schedule
-   against compact conversion+MPS. Keep conversion identical to isolate scheduling.
-2. **Direct compact-to-tile MPP:** test whether reconstructing weights into small
-   working tiles and consuming them directly can avoid full-projection staging.
-   Establish supported API/layout feasibility first; do not assume this route is
-   available or faster merely because an expanded-FP32 MPP probe executed.
+1. **Staged MPP:** retain compact weights and the existing bounded FP32 conversion stage; test a materially improved tiled/cooperative MPP multiplication schedule against compact conversion+MPS. Keep conversion identical to isolate scheduling.
+2. **Direct compact-to-tile MPP:** test whether reconstructing weights into small working tiles and consuming them directly can avoid full-projection staging. Establish supported API/layout feasibility first; do not assume this route is available or faster merely because an expanded-FP32 MPP probe executed.
 
-Target short multi-token appends and document ingestion separately. Start with a
-bounded representative projection/shape panel, including one-token controls and
-small batches plus128/256-token work. Keep the current scalar path where a matrix
-candidate does not win; any shape-dependent policy must be explicit and recorded.
-Broaden beyond a component only when evidence supports a full-engine trial.
+Target short multi-token appends and document ingestion separately. Start with a bounded representative projection/shape panel, including one-token controls and small batches plus 128/256-token work. Keep the current scalar path where a matrix candidate does not win; any shape-dependent policy must be explicit and recorded. Broaden beyond a component only when evidence supports a full-engine trial.
 
-Include decoding/scaling, packing/transposition, synchronization and multiplication
-in candidate timing. Exercise successive matrices/layers and scratch reuse, not
-only repeated access to one cached matrix. Prior naïve MPP losses are retained;
-revisit with a different schedule, not an unchanged rerun. Successful API execution
-or a speedup does not prove physical Neural Accelerator utilization.
+Include decoding/scaling, packing/transposition, synchronization and multiplication in candidate timing. Exercise successive matrices/layers and scratch reuse, not only repeated access to one cached matrix. Prior naïve MPP losses are retained; revisit with a different schedule, not an unchanged rerun. Successful API execution or a speedup does not prove physical Neural Accelerator utilization.
 
 ### B. Fused online-softmax attention
 
-Investigate a fused attention path that reads blocks of K/V, computes causal scores,
-updates stable online-softmax statistics and weighted-value accumulators, and writes
-attention outputs without materializing the full score/probability intermediate.
-Keep FP32 operands/accumulators and the current model's attention semantics.
+Investigate a fused attention path that reads blocks of K/V, computes causal scores, updates stable online-softmax statistics and weighted-value accumulators, and writes attention outputs without materializing the full score/probability intermediate. Keep FP32 operands/accumulators and the current model's attention semantics.
 
-This is a different algorithm from the earlier index-only query tiling, which kept
-separate score/softmax/attend work and lost latency. Compare against the **current
-compact, chunked engine**, not an obsolete whole-document scratch allocation; old
-multi-gigabyte savings are not predictions for this implementation.
+This is a different algorithm from the earlier index-only query tiling, which kept separate score/softmax/attend work and lost latency. Compare against the **current compact, chunked engine**, not an obsolete whole-document scratch allocation; old multi-gigabyte savings are not predictions for this implementation.
 
-Cover short and long histories within the supported capacity, multi-token ingestion
-and cached single-token decode. Verify grouped-query head mapping, causal offsets,
-nonzero prefixes, irregular tile/chunk tails, numerical stability, reset, pending
-state, checkpoints and cancellation publication. A memory saving alone does not
-establish a latency win; short-context decode may gain little.
+Cover short and long histories within the supported capacity, multi-token ingestion and cached single-token decode. Verify grouped-query head mapping, causal offsets, nonzero prefixes, irregular tile/chunk tails, numerical stability, reset, pending state, checkpoints and cancellation publication. A memory saving alone does not establish a latency win; short-context decode may gain little.
 
 ### Evidence, progression and stopping rules
 
-- Before each experiment, freeze its hypothesis, source/model/tokenizer identities,
-  bounded shapes/workloads, memory and time budgets, comparator contract, meaningful
-  performance criterion and stopping conditions. No open-ended tuning sweep.
-- Use existing metrics or a separately checked diagnostic experiment to establish
-  relevant projection/attention cost; do not infer DRAM traffic, occupancy or an
-  exact hardware mechanism from allocation counts or elapsed time alone.
-- Test MPP and attention independently first. Only combine candidates after each
-  shows a useful complete-workload benefit against a compact control.
-- Validate components before isolated full-engine trials. Preserve exact FP8-to-FP32
-  reconstruction/scales. Same-schedule comparisons require full finite bitwise
-  equality. Explicitly declare changed reduction schedules (including online
-  softmax) before testing and retain the existing finite elementwise criterion
-  `abs(error) <= 2e-4 + 1e-4 * abs(reference)`; do not widen it to fit a result.
-- Check full vocabulary logits, relevant intermediates and session/KV behavior,
-  not only argmax or text. Native agreement is not independent correctness. Preserve
-  known reference failures separately; new/materially worse discrepancies require
-  review, not automatic expansion into an independent-reference investigation.
-- Use controlled replay for matched work, with task success null. Separately use
-  free-greedy tasks with prospective criteria. Adaptive interactive exploration may
-  choose follow-ups after seeing answers/stats; freeze a selected workload before
-  comparative measurements so policies do not receive different tasks.
-- Measure complete requests/sessions, first ingestion, first actual text, decode,
-  pauses and task outcomes. Separate loading and conditioning; use balanced repeated
-  observations and retain variability, failures and resource refusals. Include all
-  conversion/packing work. Memory samples are not peaks; capture/profiling overhead
-  is not headline performance evidence.
-- Stop affected validation on nonfinite output, memory errors or invalid session/KV
-  state. Do not promote a candidate failing its numerical/state or performance gate.
-  A failed model task remains a failed task, not an automatic engine defect or an
-  invitation to repair the prompt until it passes.
+- Before each experiment, freeze its hypothesis, source/model/tokenizer identities, bounded shapes/workloads, memory and time budgets, comparator contract, meaningful performance criterion and stopping conditions. No open-ended tuning sweep.
+- Use existing metrics or a separately checked diagnostic experiment to establish relevant projection/attention cost; do not infer DRAM traffic, occupancy or an exact hardware mechanism from allocation counts or elapsed time alone.
+- Test MPP and attention independently first. Only combine candidates after each shows a useful complete-workload benefit against a compact control.
+- Validate components before isolated full-engine trials. Preserve exact FP8-to-FP32 reconstruction/scales. Same-schedule comparisons require full finite bitwise equality. Explicitly declare changed reduction schedules (including online softmax) before testing and retain the existing finite elementwise criterion `abs(error) <= 2e-4 + 1e-4 * abs(reference)`; do not widen it to fit a result.
+- Check full vocabulary logits, relevant intermediates and session/KV behavior, not only argmax or text. Native agreement is not independent correctness. Preserve known reference failures separately; new/materially worse discrepancies require review, not automatic expansion into an independent-reference investigation.
+- Use controlled replay for matched work, with task success null. Separately use free-greedy tasks with prospective criteria. Adaptive interactive exploration may choose follow-ups after seeing answers/stats; freeze a selected workload before comparative measurements so policies do not receive different tasks.
+- Measure complete requests/sessions, first ingestion, first actual text, decode, pauses and task outcomes. Separate loading and conditioning; use balanced repeated observations and retain variability, failures and resource refusals. Include all conversion/packing work. Memory samples are not peaks; capture/profiling overhead is not headline performance evidence.
+- Stop affected validation on nonfinite output, memory errors or invalid session/KV state. Do not promote a candidate failing its numerical/state or performance gate. A failed model task remains a failed task, not an automatic engine defect or an invitation to repair the prompt until it passes.
 
-The phase's deliverable is a source-bound keep/reject/defer decision for each track,
-with measured latency/memory tradeoffs and explicit coverage gaps—not a guaranteed
-speedup or mandatory promotion. Implementation, bounded execution and any default
-promotion remain separate steps; this amendment itself launches no experiment.
+The phase's deliverable is a source-bound keep/reject/defer decision for each track, with measured latency/memory tradeoffs and explicit coverage gaps—not a guaranteed speedup or mandatory promotion. Implementation, bounded execution and any default promotion remain separate steps; this amendment itself launches no experiment.

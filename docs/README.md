@@ -1,8 +1,6 @@
 # Documentation index
 
-Start with the repository [quickstart](../README.md). Current defaults and measured
-recommendations are different; no optimization trial silently promotes a default.
-Independent numerical acceptance remains FAIL/open.
+Start with the repository [quickstart](../README.md). Current defaults and measured recommendations are different; no optimization trial silently promotes a default. Independent numerical acceptance remains FAIL/open.
 
 ## Use the current system
 
@@ -28,15 +26,11 @@ Independent numerical acceptance remains FAIL/open.
 ## Technical reference
 
 - [Model facts](model-facts.md), [safetensors contracts](safetensors.md).
-- [Builder specification](real-workload-spec.md): original requirements and later research amendment;
-  consult status for outcomes, rather than treating every research candidate as pending integration.
+- [Builder specification](real-workload-spec.md): original requirements and later research amendment; consult status for outcomes, rather than treating every research candidate as pending integration.
 
 ## Milestones and history
 
-These documents preserve decisions, failures and source-bound evidence. They are
-not a sequence of additional tasks to rerun. Current contracts live in the
-[runtime](metal.md), [service](service.md), [testing](testing.md) and
-[validation](validation.md) guides; milestone results remain source-bound evidence.
+These documents preserve decisions, failures and source-bound evidence. They are not a sequence of additional tasks to rerun. Current contracts live in the [runtime](metal.md), [service](service.md), [testing](testing.md) and [validation](validation.md) guides; milestone results remain source-bound evidence.
 
 - [M1 plan](real-workload-plan.md), [M1 protocol](real-workload-m1.md): deterministic foundation.
 - [M2](real-workload-m2.md): native service.
@@ -47,7 +41,6 @@ not a sequence of additional tasks to rerun. Current contracts live in the
 - [Tool loop v1](tool-loop-v1.md): earlier bounded protocol.
 - [CPU/BF16 validation archive](validation-history.md): preserved retired commands and findings.
 - [CPU runtime](cpu-runtime.md): retired standalone CPU implementation.
-- [Full-depth validation history](full-depth-validation.md): historical thresholds and evidence;
-  not current-checkpoint numerical acceptance.
+- [Full-depth validation history](full-depth-validation.md): historical thresholds and evidence; not current-checkpoint numerical acceptance.
 
 Keep historical links and raw evidence intact when reorganizing documentation.
