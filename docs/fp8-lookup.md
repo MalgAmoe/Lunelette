@@ -1,6 +1,6 @@
 # Compact FP8 lookup scalar candidate
 
-`compact-fp8-lookup` is an **opt-in execution strategy**, not document lookup. Select it with service `--strategy`, workload-client `--native-strategy`, or single-turn CLI `--metal-strategy`. Resident FP32 remains the default; the existing `compact-fp8-arithmetic` strategy remains available unchanged.
+`compact-fp8-lookup` is an **opt-in execution strategy**, not document lookup. Select it with service `--strategy`, workload-client `--native-strategy`, or single-turn CLI `--metal-strategy`. `compact-fp8-arithmetic` is now the C default-constructor, CLI and Python-client default; lookup and resident FP32 remain explicit alternatives. Zero-initialized C options still select resident FP32, and direct native-server startup requires explicit strategy and prefill flags; see [runtime defaults](metal.md).
 
 For single-token block projections only, the new Metal kernel indexes a 256-entry unscaled FP32 constant table using the packed E4M3FN byte, multiplies by the widened BF16 scale in FP32, then uses the same Kahan lane loop and SIMD reduction as the arithmetic kernel. All 254 finite code values are exact, including signed zero. The two NaN codes remain rejected by unchanged host payload validation; their unreachable table entries are not permission to accept invalid weights.
 
@@ -8,10 +8,10 @@ The table consists of exact hexadecimal literals, derived from fraction/exponent
 
 ## Unchanged paths and accounting
 
--182 FP8 projections stay packed; BF16-derived norms, embedding and tied head stay FP32. Activations and KV remain FP32.
+- 182 FP8 projections stay packed; BF16-derived norms, embedding and tied head stay FP32. Activations and KV remain FP32.
 - Multi-token projections use the original arithmetic conversion into the same stable FP32 stage, followed by the selected MPS/custom path. No lookup conversion, small-token tile, fusion, precision change or fallback is introduced.
 - Weight bytes 4,637,454,336 and conversion stage 113,246,208 match arithmetic compact storage. Scratch/KV sizes, context/chunk admission and the memory guard are unchanged.
-- Default strategy and reuse policy are unchanged. Unknown strategy enums still fail admission; numeric enum 2 is now lookup, 3 is invalid.
+- Introducing lookup did not change the then-current default strategy or reuse policy. The later storage-default migration is described above; unknown strategy enums still fail admission, numeric enum 2 selects lookup and 3 is invalid.
 
 `/info` reports the actual selected strategy and `single_token_block_kernel`. Lookup's evidence link points here, not to M4's arithmetic-only validation. No strategy is promoted merely because it loads or produces matching tokens.
 

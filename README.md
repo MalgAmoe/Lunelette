@@ -88,6 +88,7 @@ For the optional standard local workflow: `make BUILD=build/dev-check dev-check`
 | `make interactive-test` | Adapter tests with the deterministic protocol server; loopback sockets, no model/GPU |
 | `make service-test` | Protocol/transport tests with deterministic server; Python and loopback sockets |
 | `make shader-facts-test dependency-test` | Shader constant and build-dependency checks; no inference |
+| `make build-path-test` | Optional macOS Python/compiler/Make checks of shader build paths and publication; no GPU/model execution |
 | `make entrypoint-test` | Dry-run checks of build/test execution boundaries; no compilation or GPU execution |
 
 **Model-free does not mean GPU-free.** Real-weight tests remain explicit and optional. Supply your own weights/tokenizer/fixtures; see the [testing guide](docs/testing.md). Use fresh build directories when changing flags:
