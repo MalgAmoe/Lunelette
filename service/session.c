@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "session.h"
+#include "tool_grammar.h"
 #include <stdio.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -105,75 +106,32 @@ static int append(char *out, size_t size, size_t *used, const char *format, ...)
     return 1;
 }
 
-/* Decimal integers only; canonical results additionally reject -0. */
-static int bounded_integer(const unsigned char *text, size_t length, uint64_t bound,
-                           int canonical, int64_t *value)
-{
-    size_t i = 0;
-    int negative = length && text[0] == '-';
-    if (negative) {
-        i++;
-    }
-    if (i == length || (text[i] == '0' && ((canonical && negative) || length - i != 1))) {
-        return 0;
-    }
-    uint64_t number = 0;
-    for (; i < length; i++) {
-        unsigned digit = (unsigned)text[i] - '0';
-        if (digit > 9 || number > (bound - digit) / 10) {
-            return 0;
-        }
-        number = number * 10 + digit;
-    }
-    *value = negative ? -(int64_t)number : (int64_t)number;
-    return 1;
-}
-
+/* Parsing, request mutation and publication remain session-owned. */
 static int calculator_arguments(service_request *r)
 {
     tj_document d = {0};
-    if (!service_json(r->text, strlen(r->text), "|operation||a||b|", &d)) {
+    if (!service_json(r->text, strlen(r->text), SERVICE_TOOL_CALCULATOR_FIELDS, &d)) {
         return 0;
     }
-    unsigned op = tj_field(&d, 1, "operation");
-    unsigned a = tj_field(&d, 1, "a"), b = tj_field(&d, 1, "b");
-    int64_t av = 0, bv = 0;
-    unsigned operation = op && d.nodes[op].kind == '"' ?
-        (equals(&d.nodes[op], "add") ? 1 : equals(&d.nodes[op], "subtract") ? 2 :
-         equals(&d.nodes[op], "multiply") ? 3 : 0) : 0;
-    int valid = operation && a && b && d.nodes[a].kind == '0' && d.nodes[b].kind == '0' &&
-        bounded_integer(d.nodes[a].text, d.nodes[a].length, 1000000, 0, &av) &&
-        bounded_integer(d.nodes[b].text, d.nodes[b].length, 1000000, 0, &bv);
+    service_tool_calculation calculation;
+    int valid = service_tool_calculator(&d, &calculation);
     if (valid) {
-        r->tool_operation = operation;
-        r->tool_a = (int)av;
-        r->tool_b = (int)bv;
+        r->tool_operation = calculation.operation;
+        r->tool_a = calculation.a;
+        r->tool_b = calculation.b;
     }
     tj_free(&d);
     return valid;
 }
 
-static const char *const lookup_documents[] = {"", "larch-stock", "cedar-stock", "pump-readings"};
-static const char *const lookup_passages[] = {
-    "", "LARCH-STOCK:P1", "CEDAR-STOCK:P1", "PUMP-READINGS:P1"
-};
-
 static int lookup_arguments(service_request *r, unsigned profile)
 {
     tj_document d = {0};
-    if (!service_json(r->text, strlen(r->text), "|document_id|", &d)) {
+    if (!service_json(r->text, strlen(r->text), SERVICE_TOOL_LOOKUP_FIELDS, &d)) {
         return 0;
     }
-    unsigned id = tj_field(&d, 1, "document_id");
-    unsigned document = id && d.nodes[id].kind == '"' ?
-        (equals(&d.nodes[id], lookup_documents[1]) ? 1 :
-         equals(&d.nodes[id], lookup_documents[2]) ? 2 :
-         equals(&d.nodes[id], lookup_documents[3]) ? 3 : 0) : 0;
+    unsigned document = service_tool_lookup(&d, profile);
     tj_free(&d);
-    if (!((profile == 2 && document >= 1 && document <= 2) ||
-          (profile == 3 && document == 3))) {
-        document = 0;
-    }
     r->tool_document = document;
     return document != 0;
 }
@@ -182,17 +140,10 @@ static int lookup_result(const service_request *r, const tj_node *content)
 {
     tj_document d = {0};
     if (content->length > 2048 || !service_json(content->text, content->length,
-            "|document_id||passage_id||text|", &d)) {
+            SERVICE_TOOL_RESULT_FIELDS, &d)) {
         return 0;
     }
-    unsigned id = tj_field(&d, 1, "document_id");
-    unsigned passage = tj_field(&d, 1, "passage_id");
-    unsigned text = tj_field(&d, 1, "text");
-    int valid = r->tool_document >= 1 && r->tool_document <= 3 && id && passage && text &&
-        d.nodes[id].kind == '"' && d.nodes[passage].kind == '"' &&
-        d.nodes[text].kind == '"' && d.nodes[text].length && d.nodes[text].length <= 1024 &&
-        equals(&d.nodes[id], lookup_documents[r->tool_document]) &&
-        equals(&d.nodes[passage], lookup_passages[r->tool_document]);
+    int valid = service_tool_lookup_result(&d, r->tool_document);
     tj_free(&d);
     return valid;
 }
@@ -204,7 +155,7 @@ static void tool_metadata(const service_request *r, char *output, size_t size)
     if (r->tool_kind == 2 && r->tool_document && !strcmp(r->stop_reason, "tool_call")) {
         snprintf(output, size, ",\"tool_call\":{\"id\":\"%s\",\"name\":\"lookup\","
             "\"arguments\":{\"document_id\":\"%s\"}}", r->id,
-            lookup_documents[r->tool_document]);
+            service_tool_document(r->tool_document));
     } else if (r->tool_operation && !strcmp(r->stop_reason, "tool_call")) {
         const char *names[] = {"", "add", "subtract", "multiply"};
         snprintf(output, size, ",\"tool_call\":{\"id\":\"%s\",\"name\":\"calculator\","
@@ -1337,8 +1288,8 @@ int service_route(service_session *s, const char *method, const char *path,
             }
             int64_t result;
             if (!(call->tool_kind == 2 ? lookup_result(call, &d.nodes[content]) :
-                    bounded_integer(d.nodes[content].text, d.nodes[content].length,
-                                    1000000000000ULL, 1, &result))) {
+                    service_tool_calculator_result(d.nodes[content].text,
+                                                   d.nodes[content].length, &result))) {
                 status = 400;
                 error = "invalid_tool_result";
                 goto done;

@@ -97,7 +97,7 @@ def build(out):
              '-I'+str(ROOT), '-I'+str(ROOT/'include'), '-I'+str(ROOT/'src'),
              '-I'+str(ROOT/'service'), '-I'+str(out)]
     common = [str(HELPERS/'short/short.c'), *[str(ROOT/p) for p in
-              ('service/framing.c','src/tokenizer.c','src/tokenizer_json.c','src/generation.c')]]
+              ('service/framing.c','service/tool_grammar.c','src/tokenizer.c','src/tokenizer_json.c','src/generation.c')]]
     run(flags+['-DCONTROLLER_STUB',*common,'-o',str(out/'short-stub'),'-lm','-pthread'])
     libs = ['-lm','-pthread','-framework','Foundation','-framework','Metal','-framework','MetalPerformanceShaders']
     tail = [*map(str,objects), str(ROOT/'src/model_facts.c'),str(ROOT/'src/safetensors.c')]

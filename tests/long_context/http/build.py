@@ -112,7 +112,7 @@ def build(target):
                  '-DSERVICE_NATIVE', '-DSERVICE_COMMIT="http-current-source"', '-DSERVICE_DIRTY="true"',
                  *['-I'+str(ROOT/n) for n in ('include', 'src', 'service')]]
         units = [HERE/'observe.c'] + [ROOT/n for n in
-                 ('service/session.c', 'service/framing.c', 'src/tokenizer.c',
+                 ('service/session.c', 'service/tool_grammar.c', 'service/framing.c', 'src/tokenizer.c',
                   'src/tokenizer_json.c', 'src/generation.c', 'src/model_facts.c', 'src/safetensors.c')]
         for unit in units:
             obj = target/('host-'+unit.stem+'.o')

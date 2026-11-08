@@ -1,6 +1,6 @@
 # Current native service contract
 
-This is the current service contract, not a milestone result or numerical acceptance. It describes [native.c](../service/native.c), [session.c](../service/session.c), [session.h](../service/session.h), [http.c](../service/http.c) and [framing.c](../service/framing.c). See [Metal runtime](metal.md) for runtime, model-file and memory policy; service framing and history are distinct from single-prompt CLI behavior.
+This is the current service contract, not a milestone result or numerical acceptance. It describes [native.c](../service/native.c), [session.c](../service/session.c), [session.h](../service/session.h), [http.c](../service/http.c), [framing.c](../service/framing.c) and the stateless bounded [tool grammar](../service/tool_grammar.h). See [Metal runtime](metal.md) for runtime, model-file and memory policy; service framing and history are distinct from single-prompt CLI behavior.
 
 ## Startup and profiles
 

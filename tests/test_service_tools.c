@@ -127,8 +127,26 @@ static void prepare(const unsigned *ids, unsigned count, const char *arguments)
     f.name = "calculator";
     CHECK(route("POST", "/sessions/1/messages", "{\"role\":\"user\",\"content\":\"calculate\"}") == 200);
 }
+/* Guard the request mutation seam independently of worker lifecycle. */
+static void argument_mutation(void)
+{
+    service_request r = {.tool_operation = 9, .tool_a = 8, .tool_b = 7};
+    const char *invalid[] = {"{", "{}", "{\"operation\":\"add\",\"a\":1,\"b\":1000001}",
+        "{\"operation\":\"add\",\"a\":1,\"b\":2,\"extra\":0}",
+        "{\"operation\":\"add\",\"a\":1,\"a\":2,\"b\":3}"};
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(*invalid); i++) {
+        strcpy(r.text, invalid[i]);
+        CHECK(!calculator_arguments(&r));
+        CHECK(r.tool_operation == 9 && r.tool_a == 8 && r.tool_b == 7);
+    }
+    strcpy(r.text, "{\"operation\":\"add\",\"a\":-0,\"b\":2}");
+    CHECK(calculator_arguments(&r));
+    CHECK(r.tool_operation == 1 && r.tool_a == 0 && r.tool_b == 2);
+}
+
 int main(void)
 {
+    argument_mutation();
     service_generator g = {.context = &f, .next = next, .materialize = materialize_fixture,
         .reset = reset, .destroy = destroy, .frame = frame, .piece = piece, .eos = 2,
         .native_tools = 1, .tool_frame = result_frame};

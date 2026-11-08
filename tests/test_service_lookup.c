@@ -2,8 +2,34 @@
 #include "../service/session.c"
 #include "support/lookup_fixture.h"
 
+static void argument_mutation(void)
+{
+    service_request r = {.tool_document = 2};
+    const char *parse_failures[] = {"{", "{\"document_id\":\"larch-stock\",\"extra\":1}",
+        "{\"document_id\":\"larch-stock\",\"document_id\":\"cedar-stock\"}"};
+    for (unsigned i = 0; i < sizeof(parse_failures) / sizeof(*parse_failures); i++) {
+        strcpy(r.text, parse_failures[i]);
+        CHECK(!lookup_arguments(&r, 2));
+        CHECK(r.tool_document == 2);
+    }
+    const char *schema_failures[] = {"{}", "{\"document_id\":1}",
+        "{\"document_id\":\"unknown\"}", "{\"document_id\":\"pump-readings\"}"};
+    for (unsigned i = 0; i < sizeof(schema_failures) / sizeof(*schema_failures); i++) {
+        r.tool_document = 2;
+        strcpy(r.text, schema_failures[i]);
+        CHECK(!lookup_arguments(&r, 2));
+        CHECK(r.tool_document == 0);
+    }
+    strcpy(r.text, "{\"document_id\":\"larch-stock\"}");
+    CHECK(lookup_arguments(&r, 2));
+    CHECK(r.tool_document == 1);
+    CHECK(!lookup_arguments(&r, 3));
+    CHECK(r.tool_document == 0);
+}
+
 int main(void)
 {
+    argument_mutation();
     service_generator g = {.context = &f, .next = next, .materialize = materialize_fixture,
         .reset = reset, .destroy = destroy, .frame = frame, .piece = piece, .eos = 2,
         .native_tools = 2, .tool_frame = result_frame};
