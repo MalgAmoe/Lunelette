@@ -4,7 +4,7 @@ import json
 import hashlib
 from pathlib import Path
 
-from workload_tools import ProtocolError, LimitError, integer, validate_operation as custom_validate
+from tool_validation import ProtocolError, LimitError, integer, validate_operation as custom_validate
 
 CORPUS_SHA256 = "670215ba689b16ce7fbc3444c67a728682d039b7ad0fd830d917bd876b432258"
 CORPUS_PATH = Path(__file__).resolve().parent / "fixtures/stock-documents-v1.json"

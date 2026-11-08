@@ -105,6 +105,7 @@
   "tests/test_tokenizer_alloc.c",
   "tests/test_tokenizer_bpe.c",
   "tests/test_workload_client.py",
+  "tests/test_workload_validation.py",
   "tests/tokenizer_generate_unicode.py",
   "tests/tokenizer_notes.md",
   "tools/embed_shader.c",
@@ -113,5 +114,6 @@
   "tools/scenarios/cancel-reset-v1.json",
   "tools/scenarios/native-short-v1.json",
   "tools/scenarios/partial-v1.json",
+  "tools/tool_validation.py",
   "tools/workload_client.py"
 ]

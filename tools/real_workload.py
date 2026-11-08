@@ -9,7 +9,8 @@ import time
 # Compatibility exports for archived clients; transport mocks target workload_client.
 from workload_client import AdmissionError, Service, strict_object
 
-from workload_tools import run_loop, validate_operation
+from workload_tools import run_loop
+from tool_validation import validate_operation
 import native_workload_tools
 import workload_scenarios
 import replay_logits
