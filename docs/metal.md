@@ -28,6 +28,16 @@ Select CLI storage with `--metal-strategy`; the server uses required `--strategy
 
 Compact admission is stricter than the general loader: scales must be positive FP32-normal widened BF16, FP8 codes finite, and nonzero reconstructed products normal and finite. Unsupported values fail, never fall back to resident storage. One stable conversion stage is reused; no full host FP32 model or duplicate head is retained. See [lookup details](fp8-lookup.md) and the bounded [configuration recommendation](useful-workload-panel.md).
 
+### Why one conversion stage is sufficient
+
+The compact representation changes projection storage, not the transformer execution graph. Each context keeps packed projection bytes and host scale metadata. For a multi-token projection, [metal_encode.m](../src/metal_encode.m) encodes conversion of exactly that matrix into the stage, then its MPS/custom consumer, before encoding the next projection's conversion. These operations share one ordered command stream. There is no CPU stage rewrite, second queue, double buffering or overlapping use of the stage by independent calls. The serialized-context API and synchronous call completion are part of this lifetime argument; introducing concurrency would require revisiting it.
+
+The stage is sized for the largest projection: 9,216 × 3,072 FP32 elements, or 113,246,208 bytes. A smaller conversion writes only its matrix extent; the retained tail is neither zeroed nor part of that projection's input. [metal_mps.m](../src/metal_mps.m) binds each weight view to the same stable stage with the appropriate dimensions, while input/output views retain their existing scratch buffers. Views are descriptors over storage, not another expanded model. A new token-count shape is prepared completely before replacing the old cache; reset may reuse the current cache. The vocabulary head remains on its shared expanded FP32 embedding buffer and does not borrow the compact stage.
+
+The bounded loader in [metal_weights.c](../src/metal_weights.c) checks actual packed payloads using a 64 KiB read buffer and a 256-entry admission table. Both signed zeros are accepted; both FP8 NaN codes are rejected. Every nonzero reconstructed weight must be normal and finite, and the scale itself must be positive FP32-normal widened BF16 even if some larger code could otherwise produce a normal product. This controls conversion behavior; it does **not** prove that arbitrary activations or intermediate arithmetic cannot underflow/overflow. Activation scales retain their separate positive/finite validation and are not used to quantize execution. A failed read can partially write its destination, but no failed load is published as a usable context.
+
+[Compact projection tests](../tests/test_metal_compact.m) exercise production dispatch with expanded synthetic FP32 controls, A/B/A stage reuse, captured matrix extents and retained tails, guards, shape changes and cache ownership. They protect this ordering/lifetime contract; they are not proof of independent full-model agreement. Original rationale and bounded evidence remain in [M4](real-workload-m4.md); single-token lookup details remain in [the lookup guide](fp8-lookup.md). Neither those controls nor supported full FP32 residency are retirement candidates.
+
 ## Capacity and memory
 
 `lunelette_metal_limits` separates total KV capacity C from maximum call size B:
@@ -45,6 +55,14 @@ Resident weight bytes are 13716025344. Either compact strategy uses 4637454336 w
 Before buffer allocation, shape/length arithmetic and device `maxBufferLength` are checked. The unchanged guard charges weights, stage, scratch/KV growth and host allowances, with a 2 GiB reserve and 24 GiB ceiling. Its default allowance is 310 MiB; long profiles additionally charge positive scratch/KV growth over the default plus 8 MiB host allowance. Required availability must be strictly greater than the estimate. Initially insufficient availability may be polled at up to 50 ms intervals under one 3-second monotonic deadline; clock/query errors fail closed, late sufficient readings are rejected. Destroy does not wait. This is a heuristic, not a memory-pressure monitor or allocation guarantee; do not reduce the guard or retry a refused validation run automatically. Avoid another full resident model.
 
 Each prefill/append/decode encodes one command buffer and waits once before publishing logits. Scratch/KV/weights are reused, with no per-operator CPU reads or warm-path weight uploads. MPS retains only the current shape: seven kernels and 182 matrix-view triples. Shape changes replace the cache transactionally before encoding; views retain buffers but not the owner. Framework-internal behavior is opaque. A failed shape preparation requires reset, not a silent custom fallback.
+
+### Allocation accounting versus admission
+
+The shared [allocation planner](../src/metal_plan.h) drives both requested buffer lengths and preflight accounting. Most scratch is proportional to B, attention scores use `4 × 32 × C × B` bytes, and KV uses `26 × 2 × C × 1,024 × 4` bytes. The logit vector stays 131,072 FP32 values. Reducing B therefore shrinks scratch but not retained KV or the conversion stage; raising C does not enlarge a single allowed block automatically. These are allocation relationships, not predictions of throughput or numerical equivalence across block partitions.
+
+The guard does not simply add the named total to another full scratch allowance. Its charged base is weights plus stage plus positive scratch/KV growth over the original 142,345,216-byte combined baseline, plus 8 MiB for a long profile. The existing 310 MiB allowance and 2 GiB reserve are then added. The long-profile increment covers bounded additional host lifetimes rather than only GPU payloads; future host growth must be charged, not hidden by weakening reserves. The original census and its assumptions remain in [M6](real-workload-m6.md).
+
+Availability is a heuristic `(free_count + inactive_count) × page_size`, with checked arithmetic. Mach already includes speculative pages in `free_count`; they must not be added again. This estimate, named buffer lengths and sampled physical footprint are different quantities. The [memory-guard tests](../tests/test_metal_memory_guard.c) check conversion bounds and policy thresholds/deadlines without allocating a model; they do not guarantee successful allocation under real memory pressure.
 
 ## API and ownership
 
@@ -70,6 +88,12 @@ A handle owns a full finite logit copy and a prefix boundary, **not a KV copy**.
 Create requires a valid materialized nonempty endpoint. Allocation/argument failure preserves the prior checkpoint; nonfinite endpoint detection invalidates state. Repeated restore rewinds to the retained prefix and copies saved logits, without GPU work. Append/decode preserve the active checkpoint; reset or execution failure invalidates it. Stale/wrong-context restore preserves state and returns NULL logits. Handles must be destroyed before their context; forged or destroyed pointers are invalid C usage.
 
 Each handle owns 524288 host payload bytes, excluded from the GPU memory query; replacement temporarily requires two payloads plus metadata. The runtime does not own/free caller handles. Service pending-token materialization and asynchronous publication are separate [service semantics](service.md#checkpointrestore-and-recovery).
+
+### Why restoring a boundary can reuse KV
+
+Successful append/decode writes KV only after the current prefix. The saved prefix therefore remains intact while later rows are appended. Restore shortens the visible length and replaces endpoint logits; stale tail rows are masked by that length, and a new branch overwrites them as it grows. This is why the handle needs a prefix boundary and copied logits rather than a KV snapshot. It is not a portable serialized checkpoint or permission to transfer state between contexts.
+
+The runtime checks active-handle identity, context identity and checkpoint epoch before restoration. Replacement makes older handles stale; reset and failed execution invalidate the active handle. Execution temporarily withdraws endpoint/checkpoint validity before scratch/model work and republishes it only after command completion and full finite-logit checking. Argument rejection before mutation differs from execution failure after mutation. Keep those publication boundaries when changing selection or service ownership. The implementation is in [metal_runtime.m](../src/metal_runtime.m); [runtime tests](../tests/test_metal.m) cover checkpoint/state and injected failure seams. Historical design/evidence remains in [M5](real-workload-m5.md).
 
 ## Implementation and verification
 

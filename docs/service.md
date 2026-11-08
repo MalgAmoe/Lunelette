@@ -38,6 +38,14 @@ Session `token_ids` are the authoritative complete logical ledger; retained requ
 
 Budget completion enters `partial`; another generate continues without a new user message. Natural EOS enters `ready`, requiring user input before another generation. User messages require ready state and either an empty ledger or preceding EOS. No silent history truncation or automatic budget extension occurs.
 
+### Materialization and publication boundaries
+
+A selected token is not yet a model input: logits from the committed prefix select the next ID, and consuming that ID in a subsequent runtime call creates its KV. For example, after publishing one output at a materialized prefix of length L, the logical ledger has L + 1 IDs while committed KV still has L and one output is pending. EOS follows the same rule even though it is omitted from text. With reuse ON, the next user frame can be materialized together with pending EOS; neither may be dropped or consumed twice. Accepted input can extend the unmaterialized suffix beyond that single pending output, so `logical - committed` is not generally a pending-token count.
+
+[native_materialize](../service/native.c) verifies the committed prefix and pending ID, chooses rebuild/reuse once per ingestion window, and executes at most one block per step. Rebuild resets once, then subsequent blocks append. A MORE result requests another step, not a second reset. [session.c](../service/session.c) publishes committed progress under its mutex and checks cancellation after every step, including the final one, before token selection or checkpoint publication. A completed block can therefore count as executed work without producing a published output.
+
+Runtime callbacks remain on the worker and outside the session mutex; state/receipt publication is synchronized separately. This lets HTTP inspection/cancel intent proceed while a GPU call waits, but does not preempt that call. CPU framing still runs on the socket owner under the mutex and is not promised asynchronous latency. Keep grammar extraction separate from these synchronization and publication rules. Timing windows can contain multiple prefill/append calls; use the work-v2 call/token counters rather than interpreting timing-step counts as individual GPU API calls.
+
 ## HTTP API
 
 HTTP/1.1 requires exactly one nonempty Host and one Content-Length, **including zero-length GETs**. Transfer coding, pipelining and embedded NUL are rejected. Connections close after one response. Mutation bodies are strict flat JSON objects; unknown/duplicate keys and invalid schemas fail rather than being ignored.
@@ -67,6 +75,12 @@ HTTP 202 is admission only: poll `/requests/ID` to completion and inspect sessio
 Failures are not blanket rollback: snapshot rejection after successful materialization can preserve the prior checkpoint while leaving the prefix newly committed. Pre-mutation rejection can preserve a usable phase. Runtime-invalid or mutated cancelled controls enter `needs_reset` and invalidate the checkpoint. Read terminal `session_valid`/`recovery` and state; do not retry blindly.
 
 Generation cancellation, disconnect, event overflow or runtime/protocol errors enter `needs_reset`, invalidating checkpoints. Cancellation is observed between completed blocks, not GPU preemption; work may have executed with zero published tokens. Reset after the job ends is required before reuse. Reset/close do not clear process-lifetime request-ID history or replay reservations.
+
+### Checkpoint records and ownership
+
+The runtime handle retains endpoint logits and a KV boundary; the native adapter separately keeps the corresponding prefix IDs; the session keeps its saved logical ledger, phase and public checkpoint ID. These are complementary records, not interchangeable snapshots. Save first reconciles pending/logical input, then creates the runtime replacement, and only publishes the session checkpoint after success and cancellation checks. Allocation rejection cannot roll back already completed materialization. The old handle is destroyed only after a replacement has been created successfully.
+
+Reuse OFF intentionally treats saved IDs as a replay recipe: restore clears runtime commitment, and the next generation recomputes. Reuse ON can retain the prefix because append-only execution has not overwritten it. Neither policy restores arbitrary stale runtime state after an execution failure. See [runtime checkpoint rationale](metal.md#why-restoring-a-boundary-can-reuse-kv), [native adapter tests](../tests/test_service_native.c) and [checkpoint HTTP tests](../tests/test_service_checkpoint_http.py). The original lifecycle and long-block evidence remains in [M5](real-workload-m5.md) and [M6](real-workload-m6.md); historical measurements are not fresh validation of a refactor.
 
 ## Bounds and measurement
 
