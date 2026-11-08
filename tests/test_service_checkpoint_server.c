@@ -1,8 +1,6 @@
 /* CPU-only native HTTP integration: no Metal runtime or model weights. */
 #define _POSIX_C_SOURCE 200809L
-#define main native_stub_tests_main
-#include "test_service_native.c"
-#undef main
+#include "support/native_runtime.h"
 #include <time.h>
 #include <errno.h>
 

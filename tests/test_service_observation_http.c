@@ -1,9 +1,7 @@
 #define _POSIX_C_SOURCE 200809L
 /* SCRIPTED socket/client plumbing only: no inference or numerical evidence. */
 #include "tokenizer.h"
-#define main oldmain
-#include "test_service_native.c"
-#undef main
+#include "support/native_runtime.h"
 
 static unsigned script[256], script_count, script_cursor;
 static int (*actual_next)(void *);

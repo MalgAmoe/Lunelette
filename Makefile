@@ -44,12 +44,12 @@ $(BUILD)/test_generation: tests/test_generation.c $(GENERATION_SOURCES) $(GENERA
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_generation.c $(GENERATION_SOURCES) -o $@ $(LDLIBS)
 $(BUILD)/test_generation_alloc: tests/test_generation_alloc.c $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_generation_alloc.c -o $@ $(LDLIBS)
-$(BUILD)/test_tokenizer_alloc: tests/test_tokenizer_alloc.c tests/test_tokenizer.c $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
+$(BUILD)/test_tokenizer_alloc: tests/test_tokenizer_alloc.c tests/support/tokenizer_fixture.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_tokenizer_alloc.c src/tokenizer_json.c -o $@ $(LDLIBS)
 $(BUILD)/test_tokenizer_bpe: tests/test_tokenizer_bpe.c $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_tokenizer_bpe.c src/tokenizer_json.c -o $@ $(LDLIBS)
 
-$(BUILD)/test_tokenizer: tests/test_tokenizer.c $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
+$(BUILD)/test_tokenizer: tests/test_tokenizer.c $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) tests/support/tokenizer_fixture.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_tokenizer.c $(TOKENIZER_SOURCES) -o $@ $(LDLIBS)
 $(BUILD)/test_chat: tests/test_chat.c src/chat.c include/chat.h $(TOKENIZER_HEADERS) include/runtime_limits.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) tests/test_chat.c src/chat.c -o $@ $(LDLIBS)
@@ -214,11 +214,11 @@ build-identity-test:
 core-test: build-identity-test
 $(BUILD)/test_service_server: service/http.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"$(SERVICE_COMMIT)"' -DSERVICE_DIRTY='"$(SERVICE_DIRTY)"' $(LDFLAGS) service/http.c $(SERVICE_SOURCES) -o $@ -pthread
-$(BUILD)/test_service_session: tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+$(BUILD)/test_service_session: tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) tests/support/session_fixture.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_session.c $(SERVICE_SOURCES) -o $@ -pthread
 $(BUILD)/test_service_transport: tests/test_service_transport.c service/http.c src/metal_plan.h $(MODEL_HEADERS) include/metal.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_transport.c $(SERVICE_SOURCES) -o $@ -pthread
-$(BUILD)/test_service_replay: tests/test_service_replay.c tests/test_service_session.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+$(BUILD)/test_service_replay: tests/test_service_replay.c tests/support/session_fixture.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_replay.c $(SERVICE_SOURCES) -o $@ -pthread
 
 .PHONY: service-protocol-test service-test
@@ -249,7 +249,7 @@ $(BUILD)/test_service_pieces: tests/test_service_pieces.c $(SERVICE_SOURCES) $(S
 
 ifeq ($(shell uname -s),Darwin)
 # Optional CPU-only native adapter test: runtime symbols are explicit test stubs.
-$(BUILD)/test_service_native: tests/test_service_native.c service/native.c service/native.h $(SERVICE_HEADERS) include/metal.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+$(BUILD)/test_service_native: tests/test_service_native.c service/native.c service/native.h $(SERVICE_HEADERS) include/metal.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) tests/support/native_runtime.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_native.c service/native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ $(LDLIBS)
 endif
 
@@ -258,14 +258,14 @@ $(BUILD)/test_service_metrics: tests/test_service_metrics.c $(SERVICE_SOURCES) $
 
 ifeq ($(shell uname -s),Darwin)
 # Optional CPU-only native HTTP integration; tokenizer supplied by the caller.
-$(BUILD)/test_service_checkpoint_server: tests/test_service_checkpoint_server.c tests/test_service_native.c service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+$(BUILD)/test_service_checkpoint_server: tests/test_service_checkpoint_server.c tests/support/native_runtime.h service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_checkpoint_server.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
 .PHONY: service-checkpoint-test
 service-checkpoint-test: $(BUILD)/test_service_checkpoint_server
 	@test -n "$(TOKENIZER)" || { echo 'Supply TOKENIZER=/path/to/official/tokenizer.json'; exit 1; }
 	python3 tests/test_service_checkpoint_http.py ./$(BUILD)/test_service_checkpoint_server "$(TOKENIZER)"
 
-$(BUILD)/test_service_replay_native: tests/test_service_replay_native.c tests/test_service_native.c service/native.c service/native.h service/framing.c $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+$(BUILD)/test_service_replay_native: tests/test_service_replay_native.c tests/support/native_runtime.h service/native.c service/native.h service/framing.c $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_replay_native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
 
 .PHONY: workload-replay-test
@@ -281,7 +281,7 @@ workload-scenarios-test: $(BUILD)/test_service_checkpoint_server
 endif
 
 ifeq ($(shell uname -s),Darwin)
-$(BUILD)/test_service_long_native: tests/test_service_long_native.c tests/test_service_native.c service/native.c service/native.h include/metal.h $(SERVICE_HEADERS) service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+$(BUILD)/test_service_long_native: tests/test_service_long_native.c tests/support/native_runtime.h service/native.c service/native.h include/metal.h $(SERVICE_HEADERS) service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_long_native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ $(LDLIBS)
 
 .PHONY: service-long-test
@@ -304,7 +304,7 @@ $(BUILD)/test_service_tools: tests/test_service_tools.c $(SERVICE_SOURCES) $(SER
 $(BUILD)/test_service_tools_framing: tests/test_service_tools_framing.c service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) $(LDFLAGS) tests/test_service_tools_framing.c service/framing.c $(TOKENIZER_SOURCES) -o $@ $(LDLIBS)
 
-$(BUILD)/test_service_tools_native: tests/test_service_tools_native.c tests/test_service_native.c service/native.c service/native.h $(SERVICE_HEADERS) include/metal.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
+$(BUILD)/test_service_tools_native: tests/test_service_tools_native.c tests/support/native_runtime.h service/native.c service/native.h $(SERVICE_HEADERS) include/metal.h service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -Wno-deprecated-declarations -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_tools_native.c service/native.c service/framing.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ $(LDLIBS)
 
 # Optional: caller supplies an existing tokenizer and mistral_common 1.13.1 Python.
@@ -317,7 +317,7 @@ service-tools-tokenizer-test: $(BUILD)/test_service_tools_framing $(BUILD)/test_
 
 # SCRIPTED native socket/client integration, never inference or model evidence.
 ifeq ($(shell uname -s),Darwin)
-$(BUILD)/test_service_tools_http: tests/test_service_tools_http.c tests/test_service_native.c service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+$(BUILD)/test_service_tools_http: tests/test_service_tools_http.c tests/support/native_runtime.h service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_tools_http.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
 service-tools-tokenizer-test: service-tools-http-test
 .PHONY: service-tools-http-test
@@ -326,7 +326,7 @@ service-tools-http-test: $(BUILD)/test_service_tools_http
 	$(SERVICE_TOOLS_PYTHON) tests/test_service_tools_http.py ./$(BUILD)/test_service_tools_http "$(TOKENIZER)"
 endif
 
-$(BUILD)/test_service_lookup: tests/test_service_lookup.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+$(BUILD)/test_service_lookup: tests/test_service_lookup.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) tests/support/lookup_fixture.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_lookup.c src/tokenizer_json.c -o $@ -pthread
 service-protocol-test: service-lookup-test
 .PHONY: service-lookup-test
@@ -340,14 +340,14 @@ service-lookup-tokenizer-test: $(BUILD)/test_service_lookup_framing
 	@test -n "$(TOKENIZER)" || { echo 'TOKENIZER path required (no downloads)'; exit 1; }
 	$(SERVICE_TOOLS_PYTHON) tests/test_service_lookup_fixture.py ./$(BUILD)/test_service_lookup_framing "$(TOKENIZER)"
 
-$(BUILD)/test_service_lookup_http: tests/test_service_lookup_http.c tests/test_service_native.c service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+$(BUILD)/test_service_lookup_http: tests/test_service_lookup_http.c tests/support/native_runtime.h service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_lookup_http.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
 service-lookup-tokenizer-test: service-lookup-http-test
 .PHONY: service-lookup-http-test
 service-lookup-http-test: $(BUILD)/test_service_lookup_http
 	$(SERVICE_TOOLS_PYTHON) tests/test_service_lookup_http.py ./$(BUILD)/test_service_lookup_http "$(TOKENIZER)"
 
-$(BUILD)/test_service_observation: tests/test_service_observation.c tests/test_service_lookup.c $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
+$(BUILD)/test_service_observation: tests/test_service_observation.c tests/support/lookup_fixture.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_observation.c src/tokenizer_json.c -o $@ -pthread
 .PHONY: service-observation-test
 service-protocol-test: service-observation-test
@@ -356,7 +356,7 @@ service-observation-test: $(BUILD)/test_service_observation
 
 $(BUILD)/test_service_observation_framing: tests/test_service_observation_framing.c service/framing.c service/framing.h $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) $(LDFLAGS) tests/test_service_observation_framing.c service/framing.c $(TOKENIZER_SOURCES) -o $@ $(LDLIBS)
-$(BUILD)/test_service_observation_http: tests/test_service_observation_http.c tests/test_service_native.c service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
+$(BUILD)/test_service_observation_http: tests/test_service_observation_http.c tests/support/native_runtime.h service/http.c service/native.c service/native.h service/framing.c service/framing.h $(SERVICE_SOURCES) $(SERVICE_HEADERS) $(TOKENIZER_SOURCES) $(TOKENIZER_HEADERS) $(GENERATION_SOURCES) $(GENERATION_HEADERS) include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc -Iservice $(CFLAGS) -DSERVICE_COMMIT='"test"' -DSERVICE_DIRTY='"true"' $(LDFLAGS) tests/test_service_observation_http.c service/native.c service/framing.c service/session.c $(TOKENIZER_SOURCES) $(GENERATION_SOURCES) -o $@ -pthread $(LDLIBS)
 .PHONY: service-observation-tokenizer-test
 service-observation-tokenizer-test: $(BUILD)/test_service_observation_framing $(BUILD)/test_service_observation_http

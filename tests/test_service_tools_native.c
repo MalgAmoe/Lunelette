@@ -1,9 +1,7 @@
 /* Reuse link-time CPU runtime stubs, not an inference engine or model file. */
 #include "tokenizer.h"
 #define lunelette_metal_create_configured stub_create_configured
-#define main service_existing_native_test_main
-#include "test_service_native.c"
-#undef main
+#include "support/native_runtime.h"
 #undef lunelette_metal_create_configured
 static lunelette_metal *captured;
 lunelette_metal *lunelette_metal_create_configured(const char *path,

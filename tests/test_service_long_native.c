@@ -1,8 +1,6 @@
 /* Actual native adapter, link-time CPU runtime stub. Optional official tokenizer,
  * never weights. Include native implementation to report owned host layout. */
-#define main short_native_main
-#include "test_service_native.c"
-#undef main
+#include "support/native_runtime.h"
 #include "../service/native.c"
 
 static void ingest(service_generator *g, unsigned *ids, unsigned length,

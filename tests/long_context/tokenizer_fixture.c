@@ -1,7 +1,5 @@
 /* Reuse the maintained synthetic Tekken fixture, never downloaded token data. */
-#define main unused_tokenizer_test_main
-#include "tests/test_tokenizer.c"
-#undef main
+#include "tests/support/tokenizer_fixture.h"
 
 int main(void)
 {

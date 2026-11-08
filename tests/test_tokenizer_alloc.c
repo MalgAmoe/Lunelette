@@ -26,9 +26,7 @@ static void test_free(void *p)
 #include "../src/tokenizer.c"
 #undef malloc
 #undef free
-#define main tokenizer_contract_main
-#include "test_tokenizer.c"
-#undef main
+#include "support/tokenizer_fixture.h"
 int main(void)
 {
     synthetic_file(0);

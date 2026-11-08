@@ -2,9 +2,7 @@
  * Real build forwards native callbacks to Metal; authorized model entry requires validated arguments. */
 #define _POSIX_C_SOURCE 200809L
 #ifdef CONTROLLER_STUB
-#define main inherited_native_test_main
-#include "tests/test_service_native.c"
-#undef main
+#include "tests/support/native_runtime.h"
 #endif
 #include "metal.h"
 #include <stdio.h>

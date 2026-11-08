@@ -1,6 +1,4 @@
-#define main baseline_session_main
-#include "test_service_session.c"
-#undef main
+#include "support/session_fixture.h"
 
 static int replay_frame(void *context, const unsigned char *text, size_t length,
                         int initial, unsigned *out, unsigned *capacity)

@@ -1,8 +1,6 @@
 /* Model-free runtime stubs; optional existing Tekken tokenizer, never model weights. */
 #define _POSIX_C_SOURCE 200809L
-#define main baseline_native_main
-#include "test_service_native.c"
-#undef main
+#include "support/native_runtime.h"
 #include "../service/native.c"
 
 static uint32_t read_u32(FILE *file)

@@ -1,7 +1,7 @@
+/* Intentional private grammar/state checks; do not link session.c separately. */
+#include "../service/session.c"
 /* Reuse the established deterministic session fixture, not a second tool engine. */
-#define main lookup_compatibility_main
-#include "test_service_lookup.c"
-#undef main
+#include "support/lookup_fixture.h"
 
 int main(void)
 {
