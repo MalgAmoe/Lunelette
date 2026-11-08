@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[3]
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT/'tools'))
 from long_context import safe_path, pin
+from build_command import run_build_command
 sys.path.insert(0, str(HERE.parent/'supervisor'))
 import manifest
 
@@ -77,7 +78,7 @@ def build(target):
         commands.append(argv)
         log.write((json.dumps(argv)+'\n').encode())
         log.flush()
-        result = subprocess.run(argv, cwd=ROOT, env=env, stdout=log, stderr=log,
+        result = run_build_command(argv, cwd=ROOT, env=env, stdout=log, stderr=log,
                                 timeout=timeout, preexec_fn=limits)
         census()
         if result.returncode != expected:
@@ -133,7 +134,7 @@ def build(target):
             commands.append([str(binary), *argv])
             log.flush()
             offset = log.tell()
-            result = subprocess.run([str(binary), *argv], cwd=target, env=env,
+            result = run_build_command([str(binary), *argv], cwd=target, env=env,
                                     stdout=log, stderr=log, timeout=5, preexec_fn=limits)
             refusal_output = (target/'build.log').read_bytes()[offset:]
             if result.returncode != 2 or b'missingargs:' not in refusal_output or (target/'observation.jsonl').exists():

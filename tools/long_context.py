@@ -15,6 +15,7 @@ HELPERS = ROOT / 'tests/long_context'
 sys.path.insert(0, str(HELPERS))
 import runner
 import campaign
+from build_command import run_build_command
 
 
 def safe_path(path, *, fresh=False):
@@ -73,7 +74,7 @@ def build(out):
         with log.open('a') as stream:
             stream.write(shlex.join(cmd)+'\n')
             stream.flush()
-            subprocess.run(cmd, cwd=ROOT, env=env, stdout=stream,
+            run_build_command(cmd, cwd=ROOT, env=env, stdout=stream,
                            stderr=subprocess.STDOUT, check=True, timeout=timeout)
     objects = [out/(n+'.o') for n in ('metal_weights','metal_yarn','metal_runtime','metal_encode','metal_mps')]
     make_shader = ['/usr/bin/make', 'BUILD='+str(out), 'CC='+cc]
@@ -87,7 +88,7 @@ def build(out):
     from schedule import header
     header(out/'b_schedule.h')
     flags = [cc,'-ffp-contract=off','-std=c11','-O2','-DNDEBUG','-Wall','-Wextra','-Wpedantic',
-             '-Wno-deprecated-declarations','-DCONTROLLER_MODEL_ENTRY=0',
+             '-Wno-deprecated-declarations',
              '-DSERVICE_COMMIT="long-context"','-DSERVICE_DIRTY="true"',
              '-I'+str(ROOT), '-I'+str(ROOT/'include'), '-I'+str(ROOT/'src'),
              '-I'+str(ROOT/'service'), '-I'+str(out)]

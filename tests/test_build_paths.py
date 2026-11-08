@@ -107,7 +107,8 @@ class BuildPaths(unittest.TestCase):
                     return subprocess.CompletedProcess(argv, 0, text, '')
                 with patch.object(module, 'sources', return_value=[]), \
                      patch.object(module, 'pin', return_value={}), \
-                     patch.object(module.subprocess, 'run', side_effect=run):
+                     patch.object(module.subprocess, 'run', side_effect=run), \
+                     patch.object(module, 'run_build_command', side_effect=run):
                     with self.assertRaises(ReachedMake):
                         module.build(target)
                 self.assertFalse((target / 'metal_shader.h').exists())

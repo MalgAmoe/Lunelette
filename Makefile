@@ -158,6 +158,7 @@ endif
 # Optional stdlib tooling regression; host/core tests remain Python-free.
 build-path-test:
 	$(PYTHON) -B tests/test_build_paths.py
+	$(PYTHON) -B tests/test_build_timeout.py
 shader-facts-test:
 	CC='$(CC)' python3 tests/test_shader_facts.py
 dependency-test:
