@@ -48,11 +48,11 @@ make BUILD=build/reference-check build/reference-check/compare_metal
 build/reference-check/compare_metal --self-test
 build/reference-check/compare_metal \
   models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
-  fixtures/prompt.ids fixtures/generation.safetensors
-# Use a trailing --metal-prefill=custom for the separate custom-prefill check.
+  fixtures/prompt.ids fixtures/generation.safetensors --strategy=resident-fp32
+# Put --metal-prefill=custom before the final --strategy selector for custom prefill.
 ```
 
-This consumer uses its fixed default resident/context 256 profile; it is not a compact/4352 acceptance command. `prompt.ids` contains 1..256 whitespace-separated decimal IDs. The independent reference safetensors contains:
+This consumer supports explicit resident, compact arithmetic and compact lookup selectors (see [strategy compatibility](native-regression.md#strategy-identity-and-compatibility)); omitted selection is deliberately fixed resident, not the product default. Context remains 256; this is not a 4352 acceptance command. `prompt.ids` contains 1..256 whitespace-separated decimal IDs. The independent reference safetensors contains:
 
 | Tensor | dtype / shape |
 |---|---|
@@ -63,6 +63,8 @@ This consumer uses its fixed default resident/context 256 profile; it is not a c
 `1 <= N <= 256 - prompt_count`; a numerical fixture therefore needs at most 255 prompt IDs, even though the runtime also accepts a full 256-token prefill. Reference trajectories must use actual cached decode, not repeated full-prefix recomputation. The comparator runs two reset cycles, checks all logits finite, requires exact lowest-index greedy IDs and applies `abs(error) <= 2e-4 + 1e-4*abs(reference)` to numerical comparisons. Multiple prompt/reference pairs can be supplied in one invocation. Additional invalid-ID, last-slot and destroy/recreate checks are state coverage, not extra independent numerical comparisons. Fixture provenance must be verified separately.
 
 **Output-side effect:** this comparator writes failing `.f32` sidecars beside the fixture using fixed names and can overwrite those sidecars on a repeated invocation. Use a fresh run directory containing hash-verified copies of the supplied fixtures; do not run it against an immutable evidence directory or reuse an earlier output location. This does not regenerate or change the expected fixture contents.
+
+Explicit strategy invocations write sidecars named `FIXTURE.MODE-STRATEGY-cycleN-stepN-TENSOR.f32`, including explicit resident. Legacy invocations without a selector retain `FIXTURE.MODE-cycleN-stepN-TENSOR.f32`; existing files are not renamed or relabelled. Repeated runs with the same mode/strategy names overwrite sidecars. Different explicit strategies cannot overwrite each other's outputs, but fresh run directories remain required. Actual strategy is queried from runtime memory accounting, reported and checked against the request (also on successful-path recreation).
 
 Current strict FP8-derived longer-context discrepancies remain unresolved. Preserve nonzero exits, raw failed vectors and metrics; do not loosen the threshold or refresh expected values to erase them. Matching greedy IDs is insufficient. Run model processes sequentially; a final memory-guard refusal ends the run, not an invitation to bypass admission or retry. Never keep a reference Python model resident alongside the native model.
 

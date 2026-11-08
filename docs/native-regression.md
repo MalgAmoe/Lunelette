@@ -36,12 +36,12 @@ build/compare_native capture MODEL.safetensors mps NEW_DIRECTORY \
   FIXTURES/prefill6.ids FIXTURES/prefill6.safetensors \
   FIXTURES/prefill24.ids FIXTURES/prefill24.safetensors \
   FIXTURES/prefill150.ids FIXTURES/prefill150.safetensors \
-  FIXTURES/prefill248.ids FIXTURES/prefill248.safetensors
+  FIXTURES/prefill248.ids FIXTURES/prefill248.safetensors --strategy=resident-fp32
 ```
 
 Use `custom` for the separate custom baseline. Capture creates files exclusively; existing files fail, never overwrite. Freeze and hash the artifacts and provenance **before** invoking `check` in a fresh process with the same arguments and reference directory. `check` never writes a baseline and runs two reset cycles: 64 full vectors per mode. A third process can repeat the same check without recapture. Do not run two resident model processes concurrently. The unchanged production memory guard remains final; no retry, headroom change or fallback is permitted.
 
-The eight `generated` IDs in each existing FP8 oracle fixture are used only for teacher forcing: prefill plus seven true cached decodes. Oracle logits are NOT copied. Native outputs alone form this regression reference. Missing or malformed IDs, steps, modes, context, shapes, formats and nonfinite vectors fail; no empty comparison or missing-file fallback succeeds. The complete trajectory must match. The binary format is fixed little-endian uint32 header/IDs and IEEE FP32 logits: magic `0x314e554c`, mode (0 MPS / 1 custom), context 256, prefix length, steps 8, vocabulary 131072, prompt IDs, eight forced IDs, eight full logit vectors. Each mode archives about 16 MiB, outside the engine repository.
+The eight `generated` IDs in each existing FP8 oracle fixture are used only for teacher forcing: prefill plus seven true cached decodes. Oracle logits are NOT copied. Native outputs alone form this regression reference. Missing or malformed IDs, steps, modes, context, shapes, formats and nonfinite vectors fail; no empty comparison or missing-file fallback succeeds. The complete trajectory must match. The binary format is fixed little-endian uint32 header/IDs and IEEE FP32 logits: magic `0x324e554c` (LUN2), strategy (0 resident / 1 arithmetic / 2 lookup), mode (0 MPS / 1 custom), context 256, prefix length, steps 8, vocabulary 131072, prompt IDs, eight forced IDs, eight full logit vectors. Each mode archives about 16 MiB, outside the engine repository.
 
 Acceptance for **unchanged Ministral arithmetic** is finite values on both sides, exact bitwise logits (score tolerance zero), identical top 1 and full top 5/20/64 sets at every step. Ties sort by increasing vocabulary ID. Per-step output reports finite counts separately, exactness, both top 1 IDs, top-K intersection counts, max absolute error, RMS and cosine with double accumulation. Bitwise repeatability must be established in separate processes before accepting this contract. This is not DS4's 8.0 score limit. An FP16 or other precision-changing candidate needs a separately agreed numerical contract; this test does not validate one.
 
@@ -50,9 +50,17 @@ A provenance manager should hash the entire checkpoint **before construction**, 
 Offline file validation (no model/device needed):
 
 ```sh
-build/test_native --files REFERENCE.bin CANDIDATE.bin mps 6
+build/test_native --files REFERENCE.bin CANDIDATE.bin mps 6 --strategy=resident-fp32
 ```
 
 The offline build shares the exact C metrics/format reader with the model runner. Its unit tests cover known swaps, ties against an independent double rank oracle, nonfinite values, same-argmax changes outside top 64 and malformed headers/truncated vectors. Full-file negative validation should additionally preserve logs for NaN, Inf, top 1 swap, tail change, missing step, truncation, mode/token/context/shape/ format corruption and manifest hash corruption. These are logit/artifact mutations, not engine KV perturbations, and must not be described as KV injection.
 
 These baselines are usable regression evidence, accepted on repeatability and component tests, not an independent full-model mathematical oracle. The existing strict Python comparator, failure logs and thresholds remain unchanged. The known 128-comparison independent-reference panel gap (64 per mode) and longer-case numerical disagreements remain open; neither native parity nor generated text establishes general correctness. No footprint, performance or benchmark claim is made.
+
+## Strategy identity and compatibility
+
+Both comparators accept a final `--strategy=resident-fp32`, `--strategy=compact-fp8-arithmetic` or `--strategy=compact-fp8-lookup`. Omission deliberately means fixed resident FP32, independent of the product default. Native capture/check and offline `--files` share this policy. `make native-regression` passes resident explicitly; `STRATEGY=compact-fp8-arithmetic` or `STRATEGY=compact-fp8-lookup` overrides it. Use separate reference directories per strategy and prefill mode.
+
+Explicit-strategy native captures use LUN2. Legacy capture invocations without a selector retain LUN1 and fixed resident selection so existing LUN1-only provenance managers remain usable; they cannot capture compact strategies. New callers should always select explicitly. LUN1 (`0x314e554c`) has no strategy word and is interpreted exclusively as resident; its remaining layout is unchanged. Both formats are readable offline, including mixed-version resident pairs. Unknown formats, invalid strategy words and requested/artifact strategy mismatches fail; check validates every artifact before model construction. Native acceptance remains same-strategy strict finite bitwise parity, never automatic cross-strategy acceptance. Runtime memory queries report actual strategy and must match the request before execution.
+
+Strategy binding does not add checkpoint hashes to the binary: the external provenance manager still owns model identity, source identity, precision, layout and environment checks. Context remains 256 with the existing fixed trajectories; compact selector support is not new numerical evidence or long-context/service coverage. Independent-reference comparison supports all three strategies with unchanged tolerances and teacher forcing, not native cross-strategy approval.

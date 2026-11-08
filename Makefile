@@ -142,7 +142,7 @@ metal-test: $(BUILD)/test_metal $(BUILD)/compare_metal $(BUILD)/test_metal_compa
 $(BUILD)/metal_snapshot.o: tests/metal_snapshot.m $(METAL_HEADERS) | $(BUILD)
 	$(CC) $(CPPFLAGS) -Isrc $(filter-out -std=c11,$(CFLAGS)) $(METAL_FLAGS) -c $< -o $@
 
-$(BUILD)/compare_metal: $(BUILD)/metal_snapshot.o tests/compare_metal.c $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+$(BUILD)/compare_metal: $(BUILD)/metal_snapshot.o tests/compare_metal.c tests/comparator_strategy.h $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -mmacosx-version-min=15.0 $(LDFLAGS) tests/compare_metal.c $(BUILD)/metal_snapshot.o $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
 
 $(BUILD)/lunelette: $(CLI_SOURCES) $(CLI_HEADERS) $(METAL_OBJECTS) include/metal.h | $(BUILD)
@@ -179,20 +179,24 @@ metal-norm-diagnostic: $(BUILD)/test_metal_reference
 endif
 
 # Portable native comparator unit tests; no Metal/Python/model dependency.
-$(BUILD)/test_native: tests/compare_native.c | $(BUILD)
+$(BUILD)/test_native: tests/compare_native.c tests/comparator_strategy.h include/metal.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -DNATIVE_OFFLINE $(LDFLAGS) $< -o $@ $(LDLIBS)
+$(BUILD)/test_comparator_strategy: tests/test_comparator_strategy.c tests/comparator_strategy.h include/metal.h | $(BUILD)
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) $< -o $@
 core-test: native-self-test
 .PHONY: native-self-test
-native-self-test: $(BUILD)/test_native
+native-self-test: $(BUILD)/test_native $(BUILD)/test_comparator_strategy
+	./$(BUILD)/test_comparator_strategy
 	./$(BUILD)/test_native --self-test
 
 ifeq ($(shell uname -s),Darwin)
-$(BUILD)/compare_native: tests/compare_native.c $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
+$(BUILD)/compare_native: tests/compare_native.c tests/comparator_strategy.h $(METAL_OBJECTS) $(METAL_HEADERS) src/model_facts.c src/safetensors.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(METAL_TARGET) $(LDFLAGS) $< $(METAL_OBJECTS) src/model_facts.c src/safetensors.c -o $@ $(LDLIBS) $(METAL_LIBS)
+STRATEGY ?= resident-fp32
 .PHONY: native-regression
 native-regression: $(BUILD)/compare_native
 	@test -n "$(WEIGHTS)" -a -n "$(FIXTURES)" -a -n "$(BASELINE)" -a -n "$(MODE)" || { echo 'SKIP: explicit WEIGHTS FIXTURES BASELINE MODE required (not a pass)'; exit 77; }
-	./$(BUILD)/compare_native check "$(WEIGHTS)" "$(MODE)" "$(BASELINE)" $(foreach n,6 24 150 248,"$(FIXTURES)/prefill$(n).ids" "$(FIXTURES)/prefill$(n).safetensors")
+	./$(BUILD)/compare_native check "$(WEIGHTS)" "$(MODE)" "$(BASELINE)" $(foreach n,6 24 150 248,"$(FIXTURES)/prefill$(n).ids" "$(FIXTURES)/prefill$(n).safetensors") --strategy="$(STRATEGY)"
 endif
 
 # Model-free POSIX host foundation; never links the production inference runtime.

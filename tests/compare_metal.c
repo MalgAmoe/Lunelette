@@ -3,6 +3,7 @@
  * logits_0..N-1 F32 [1,131072], captured by an independent reference.
  */
 #include "metal.h"
+#include "comparator_strategy.h"
 #include "model_facts.h"
 #include "runtime_limits.h"
 #include "safetensors.h"
@@ -17,13 +18,16 @@
 const float *test_metal_snapshot(lunelette_metal *runtime, int normalized);
 
 static const char *capture_mode = "mps";
+static lunelette_metal_strategy selected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
+static int explicit_strategy;
 
 static int preserve_vector(const char *fixture, int cycle, size_t step,
     const char *tensor, const float *values, size_t count)
 {
     char path[4096];
-    int length = snprintf(path, sizeof path, "%s.%s-cycle%d-step%zu-%s.f32", fixture,
-        capture_mode, cycle, step, tensor);
+    int length = snprintf(path, sizeof path, "%s.%s%s%s-cycle%d-step%zu-%s.f32", fixture,
+        capture_mode, explicit_strategy ? "-" : "",
+        explicit_strategy ? comparator_strategy_name(selected_strategy) : "", cycle, step, tensor);
     if (length < 0 || (size_t)length >= sizeof path) {
         return -1;
     }
@@ -310,22 +314,32 @@ int main(int argc, char **argv)
     if (argc == 2 && strcmp(argv[1], "--self-test") == 0) {
         return self_test();
     }
-    lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
+    lunelette_metal_options options = {
+        LUNELETTE_METAL_PREFILL_MPS, LUNELETTE_METAL_RESIDENT_FP32
+    };
+    int original_argc = argc;
+    if (comparator_strategy_args(&argc, argv, &selected_strategy)) { return 1; }
+    explicit_strategy = argc != original_argc;
+    options.strategy = selected_strategy;
     if (argc > 1 && strcmp(argv[argc - 1], "--metal-prefill=custom") == 0) {
         options.prefill = LUNELETTE_METAL_PREFILL_CUSTOM;
         capture_mode = "custom";
         argc--;
     }
     if (argc < 4 || (argc - 2) % 2 != 0) {
-        fputs("usage: compare_metal MODEL.safetensors IDS_FILE FIXTURE [IDS_FILE FIXTURE ...] [--metal-prefill=custom]\n", stderr);
+        fputs("usage: compare_metal MODEL.safetensors IDS_FILE FIXTURE [IDS_FILE FIXTURE ...] [--metal-prefill=custom] [--strategy=NAME]\n", stderr);
         return 1;
     }
-    char error[512];
+    char error[512] = "";
     double start = seconds();
     lunelette_metal *runtime = lunelette_metal_create_with_options(argv[1],
         &options, error, sizeof error);
     if (!runtime) {
         fprintf(stderr, "%s\n", error);
+        return 1;
+    }
+    if (comparator_strategy_actual(runtime, selected_strategy)) {
+        lunelette_metal_destroy(runtime);
         return 1;
     }
     printf("load_seconds %.6f\n", seconds() - start);
@@ -353,7 +367,8 @@ int main(int argc, char **argv)
             &options, error, sizeof error);
         int64_t ids[] = {1, 42};
         const float *logits = NULL;
-        if (!runtime || lunelette_metal_prefill(runtime, ids, 2, &logits,
+        if (!runtime || comparator_strategy_actual(runtime, selected_strategy) ||
+            lunelette_metal_prefill(runtime, ids, 2, &logits,
                 error, sizeof error) != 0) {
             fprintf(stderr, "Metal recreate failed: %s\n", error);
             status = 1;

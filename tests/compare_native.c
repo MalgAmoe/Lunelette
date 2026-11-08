@@ -1,5 +1,6 @@
 /* Native regression reference, NOT an independent mathematical oracle.
- * Fixed LE32 format: magic, mode, context, prompt count, steps, vocabulary,
+ * Versioned LE32 format: magic, strategy (LUN2 only), mode, context, prompt count,
+ * steps, vocabulary,
  * prompt IDs, eight teacher-forced IDs, then eight full FP32 logit vectors.
  * No production instrumentation. Offline build needs only the C library. */
 #include <stdint.h>
@@ -7,6 +8,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "comparator_strategy.h"
+static lunelette_metal_strategy selected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
+static int legacy_capture; /* Omitted selector preserves archived LUN1 capture callers. */
 #ifndef NATIVE_OFFLINE
 #include "metal.h"
 #include "safetensors.h"
@@ -95,8 +99,19 @@ static int header(FILE *file, int mode, size_t count, const int64_t *ids,
     const int64_t *forced, int writing)
 {
     int bad = 0;
-    uint32_t fixed[] = {0x314e554c, (uint32_t)mode, 256, (uint32_t)count, STEPS, VOCAB};
-    for (size_t i = 0; i < 6; i++) {
+    uint32_t magic = writing ? (legacy_capture ? 0x314e554c : 0x324e554c) :
+        read_u32(file, &bad);
+    if (magic != 0x314e554c && magic != 0x324e554c) { return 1; }
+    if (writing && write_u32(file, magic)) { return 1; }
+    uint32_t strategy = magic == 0x324e554c ?
+        (writing ? (uint32_t)selected_strategy : read_u32(file, &bad)) : 0;
+    if (strategy != (uint32_t)selected_strategy || strategy > 2) {
+        fputs("Native artifact strategy mismatch or invalid strategy\n", stderr);
+        return 1;
+    }
+    if (writing && magic == 0x324e554c && write_u32(file, strategy)) { return 1; }
+    uint32_t fixed[] = { (uint32_t)mode, 256, (uint32_t)count, STEPS, VOCAB};
+    for (size_t i = 0; i < 5; i++) {
         if (writing) {
             bad |= write_u32(file, fixed[i]);
         } else if (read_u32(file, &bad) != fixed[i]) {
@@ -146,7 +161,9 @@ static int files(const char *left, const char *right, int mode, size_t count)
         goto cleanup;
     }
     /* Read trajectory from left, then validate both complete headers against it. */
-    if (fseek(a, 24, SEEK_SET)) {
+    uint32_t magic = read_u32(a, &bad);
+    if (bad || (magic != 0x314e554c && magic != 0x324e554c) ||
+        fseek(a, magic == 0x324e554c ? 28 : 24, SEEK_SET)) {
         goto cleanup;
     }
     for (size_t i = 0; i < count + STEPS; i++) {
@@ -178,6 +195,67 @@ cleanup:
 
 static int self_test(void)
 {
+    legacy_capture = 0;
+    selected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
+    char *legacy[] = {"tool", "check"};
+    int arguments = 2;
+    CHECK(!comparator_strategy_args(&arguments, legacy, &selected_strategy));
+    CHECK(arguments == 2 && selected_strategy == LUNELETTE_METAL_RESIDENT_FP32);
+    for (int strategy = 0; strategy < 3; strategy++) {
+        char selector[128];
+        snprintf(selector, sizeof selector, "--strategy=%s",
+            comparator_strategy_name((lunelette_metal_strategy)strategy));
+        char *args[] = {"tool", selector};
+        arguments = 2;
+        CHECK(!comparator_strategy_args(&arguments, args, &selected_strategy));
+        CHECK(arguments == 1 && (int)selected_strategy == strategy);
+        int64_t token = 1, forced_ids[STEPS] = {0};
+        FILE *artifact = tmpfile();
+        CHECK(artifact);
+        CHECK(!header(artifact, 0, 1, &token, forced_ids, 1));
+        rewind(artifact);
+        CHECK(!header(artifact, 0, 1, &token, forced_ids, 0));
+        selected_strategy = (lunelette_metal_strategy)((strategy + 1) % 3);
+        rewind(artifact);
+        CHECK(header(artifact, 0, 1, &token, forced_ids, 0));
+        CHECK(!fseek(artifact, 4, SEEK_SET));
+        CHECK(!write_u32(artifact, 3));
+        rewind(artifact);
+        CHECK(header(artifact, 0, 1, &token, forced_ids, 0));
+        CHECK(!fclose(artifact));
+    }
+    char *invalid[] = {"tool", "--strategy=invalid"};
+    arguments = 2;
+    CHECK(comparator_strategy_args(&arguments, invalid, &selected_strategy));
+    /* Original LUN1 layout, no strategy field: resident only. */
+    FILE *old = tmpfile();
+    CHECK(old);
+    const uint32_t old_header[] = {0x314e554c, 0, 256, 1, STEPS, VOCAB,
+        1, 0, 0, 0, 0, 0, 0, 0, 0};
+    for (size_t i = 0; i < sizeof old_header / sizeof *old_header; i++) {
+        CHECK(!write_u32(old, old_header[i]));
+    }
+    int64_t old_token = 1, old_forced[STEPS] = {0};
+    for (int strategy = 0; strategy < 3; strategy++) {
+        selected_strategy = (lunelette_metal_strategy)strategy;
+        rewind(old);
+        CHECK(!!header(old, 0, 1, &old_token, old_forced, 0) == (strategy != 0));
+    }
+    CHECK(!fclose(old));
+    selected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
+    legacy_capture = 1;
+    old = tmpfile();
+    CHECK(old);
+    CHECK(!header(old, 0, 1, &old_token, old_forced, 1));
+    CHECK(ftell(old) == (long)sizeof old_header);
+    rewind(old);
+    for (size_t i = 0; i < sizeof old_header / sizeof *old_header; i++) {
+        int bad = 0;
+        CHECK(read_u32(old, &bad) == old_header[i] && !bad);
+    }
+    CHECK(!fclose(old));
+    legacy_capture = 0;
+    selected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
     float a[128], b[128];
     for (int i = 0; i < 128; i++) {
         a[i] = b[i] = (float)(127 - i);
@@ -230,8 +308,8 @@ static int self_test(void)
     CHECK(header(temporary, 0, 6, prompt, forced, 0));
     prompt[0]--;
     /* Corrupt context, step count, shape, and format magic separately. */
-    const long offsets[] = {0, 8, 16, 20};
-    const uint32_t originals[] = {0x314e554c, 256, STEPS, VOCAB};
+    const long offsets[] = {0, 12, 20, 24};
+    const uint32_t originals[] = {0x324e554c, 256, STEPS, VOCAB};
     for (size_t i = 0; i < 4; i++) {
         CHECK(!fseek(temporary, offsets[i], SEEK_SET));
         CHECK(!write_u32(temporary, originals[i] + 1));
@@ -324,10 +402,13 @@ static int model(int argc, char **argv)
             goto cleanup;
         }
     }
-    lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
+    lunelette_metal_options options = {
+        LUNELETTE_METAL_PREFILL_MPS, LUNELETTE_METAL_RESIDENT_FP32
+    };
+    options.strategy = selected_strategy;
     options.prefill = mode ? LUNELETTE_METAL_PREFILL_CUSTOM : LUNELETTE_METAL_PREFILL_MPS;
     runtime = lunelette_metal_create_with_options(argv[2], &options, error, sizeof error);
-    if (!runtime) { goto cleanup; }
+    if (!runtime || comparator_strategy_actual(runtime, selected_strategy)) { goto cleanup; }
     size_t compared = 0;
     for (int cycle = 0; cycle < (writing ? 1 : 2); cycle++) {
         for (int c = 0; c < 4; c++) {
@@ -371,6 +452,9 @@ cleanup:
 
 int main(int argc, char **argv)
 {
+    int original_argc = argc;
+    if (comparator_strategy_args(&argc, argv, &selected_strategy)) { return 1; }
+    legacy_capture = argc == original_argc;
     if (argc == 2 && !strcmp(argv[1], "--self-test")) { return self_test(); }
     if (argc == 6 && !strcmp(argv[1], "--files")) {
         int mode = !strcmp(argv[4], "custom");
@@ -388,7 +472,7 @@ int main(int argc, char **argv)
         return model(argc, argv);
     }
 #endif
-    fputs("usage: compare_native --self-test | --files REF ACTUAL mps|custom 6|24|150|248\n"
-        "or capture|check MODEL mps|custom DIRECTORY IDS FIXTURE (four pairs: 6/24/150/248)\n", stderr);
+    fputs("usage: compare_native --self-test | --files REF ACTUAL mps|custom 6|24|150|248 [--strategy=NAME]\n"
+        "or capture|check MODEL mps|custom DIRECTORY IDS FIXTURE (four pairs: 6/24/150/248) [--strategy=NAME]\n", stderr);
     return 1;
 }
