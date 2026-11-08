@@ -41,6 +41,18 @@ class Scenarios(unittest.TestCase):
         self.assertEqual(self.load({"version": 1, "mode": "controlled_protocol_only",
                                    "operations": []})["version"], 1)
 
+    def test_duplicate_ordinary_request_id(self):
+        from unittest.mock import Mock
+        # The version-one direct runner still owns duplicate-ID rejection.
+        service = Mock(native=False)
+        service.generate.return_value = {"event": "completed"}
+        scenario = {"mode": "controlled_protocol_only", "operations": [
+            {"op": "generate", "id": "same", "budget": 1},
+            {"op": "generate", "id": "same", "budget": 1}]}
+        with self.assertRaisesRegex(ValueError, "duplicate request id"):
+            run(service, scenario)
+        service.generate.assert_called_once()
+
     def test_interrupt_deadline_restored(self):
         class Interrupted:
             native = True
@@ -102,8 +114,8 @@ class ExtendedScenarios(Scenarios):
             self.load(self.minimal(operations + [dict(op='generate', id='extra', budget=1)], 16))
 
     def test_tool_namespace_and_control_policy(self):
-        tool = dict(op='tool_loop', id='tool', budget=16, max_calls=2,
-                    max_generated=64, wall_seconds=10, answer=42)
+        tool = dict(op='native_tool_loop', id='tool', budget=16, max_calls=2,
+                    max_generated=64, wall_seconds=10, answer=43)
         self.load(self.minimal([tool, dict(op='generate', id='ordinary', budget=1)]))
         for identity in ('tool-0', 'tool-1', 'tool-2'):
             with self.subTest(identity=identity), self.assertRaises(ValueError):

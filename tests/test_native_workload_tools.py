@@ -115,6 +115,52 @@ class Tests(unittest.TestCase):
                 self.assertEqual(report["tool_calls"], 0)
                 self.assertEqual(service.messages, [])
 
+    def test_retained_coherence_matrix(self):
+        # Preserve reusable metadata/state rejection coverage from the retired
+        # application executor, exercising both native call and final framing.
+        for final in (False, True):
+            fixture = Fake()
+            fixture.direct = final
+            good = fixture.generate(7, "calc-0", 128)
+            mutations = []
+            for key, bad in (("status", "running"), ("operation", "continue"),
+                             ("id", "wrong"), ("session_id", 8),
+                             ("session_valid", False), ("recovery", "reset"),
+                             ("generated_tokens", 19), ("stop_reason", "budget"),
+                             ("state", "partial"), ("logical_tokens", 23),
+                             ("committed_tokens", 20), ("pending_tokens", True),
+                             ("token_ids", []), ("token_ids", [True, 2]),
+                             ("token_ids", [131072, 2]), ("token_ids", [-1, 2]),
+                             ("token_ids", [2, 2]), ("token_ids", [1043, 1043])):
+                mutations.append(("request_metadata", key, bad))
+            for key, bad in (("session_id", 8), ("state", "partial"),
+                             ("logical_tokens", 21), ("committed_tokens", 22),
+                             ("pending_tokens", 0), ("remaining", 1),
+                             ("token_ids", [1, 3, 11, 2]),
+                             ("token_ids", [True] + good["session_metadata"]["token_ids"][1:])):
+                mutations.append(("session_metadata", key, bad))
+            mutations += [(None, "request_metadata", None), (None, "session_metadata", [])]
+            for parent, key, bad in mutations:
+                with self.subTest(final=final, parent=parent, key=key, bad=bad):
+                    service = Fake()
+                    service.direct = final
+                    def mutate(value):
+                        (value[parent] if parent else value)[key] = bad
+                    service.mutate = mutate
+                    _, report = self.execute(service)
+                    self.assertFalse(report["protocol_success"])
+                    self.assertIsNone(report["task_success"])
+                    self.assertEqual(service.messages, [])
+
+    def test_interrupt_restores_deadline(self):
+        service = Fake()
+        service.absolute_deadline = 1e20
+        with patch.object(service, "generate", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                native.run_loop(service, 7, OP, set().add)
+        self.assertEqual(service.absolute_deadline, 1e20)
+        self.assertEqual(service.messages, [])
+
     def test_schema_and_bounds(self):
         for key, bad in [("a", True), ("a", 1.0), ("a", 1000001), ("b", -1000001),
                          ("operation", "divide"), ("extra", 1)]:

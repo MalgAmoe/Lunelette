@@ -87,6 +87,7 @@
   "tests/test_metal_reference.m",
   "tests/test_metal_weights.c",
   "tests/test_metal_zero_work.c",
+  "tests/test_native_workload_tools.py",
   "tests/test_safetensors.c",
   "tests/test_service_checkpoint_http.py",
   "tests/test_service_checkpoint_server.c",
@@ -108,15 +109,19 @@
   "tests/test_tokenizer_alloc.c",
   "tests/test_tokenizer_bpe.c",
   "tests/test_workload_client.py",
+  "tests/test_workload_retirement.py",
+  "tests/test_workload_scenarios.py",
   "tests/test_workload_validation.py",
   "tests/tokenizer_generate_unicode.py",
   "tests/tokenizer_notes.md",
   "tools/embed_shader.c",
+  "tools/native_workload_tools.py",
   "tools/real_workload.py",
   "tools/reference/README.md",
   "tools/scenarios/cancel-reset-v1.json",
   "tools/scenarios/native-short-v1.json",
   "tools/scenarios/partial-v1.json",
   "tools/tool_validation.py",
-  "tools/workload_client.py"
+  "tools/workload_client.py",
+  "tools/workload_scenarios.py"
 ]

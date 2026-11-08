@@ -1,5 +1,7 @@
 # Client tool loop v1 (diagnostic only)
 
+> Historical protocol description only. Application-JSON `tool_loop` execution, its calculator-v1 scenario and dedicated executor tests are retired. Old invocations below are not supported commands: scenario loading and direct execution reject `tool_loop` explicitly, without translating it to native tools. Use the separately specified [native tool protocol](native-tool-loop.md) for current functionality. The original description below is retained as historical evidence; code/scenario filenames describe the pre-retirement tree.
+
 `tools/real_workload.py` accepts the reusable `tool_loop` operation in a version-1 scenario. Tools execute only in the Python client. **native_tools: false**: this is an application JSON protocol, not native function calling. No engine changes, new role, or assistant decode/re-encode are involved. The engine retains its assistant tokens; results append through the existing user-message framing in the same session.
 
 ## Protocol

@@ -38,7 +38,7 @@ These documents preserve decisions, failures and source-bound evidence. They are
 - [M4](real-workload-m4.md): compact storage.
 - [M5](real-workload-m5.md): prefix reuse and checkpoints.
 - [M6](real-workload-m6.md): long context and chunked ingestion.
-- [Tool loop v1](tool-loop-v1.md): earlier bounded protocol.
+- [Tool loop v1](tool-loop-v1.md): historical description of the retired application-JSON protocol, not current usage.
 - [CPU/BF16 validation archive](validation-history.md): preserved retired commands and findings.
 - [CPU runtime](cpu-runtime.md): retired standalone CPU implementation.
 - [Full-depth validation history](full-depth-validation.md): historical thresholds and evidence; not current-checkpoint numerical acceptance.

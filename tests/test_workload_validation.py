@@ -7,19 +7,16 @@ import unittest
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
 import tool_validation as shared
-import workload_tools as legacy
 import native_workload_tools as native
 
 
 class ValidationTests(unittest.TestCase):
     def operation(self, **changes):
-        return {"op": "tool_loop", "id": "calc", "budget": 256, "max_calls": 16,
+        return {"op": "native_tool_loop", "id": "calc", "budget": 256, "max_calls": 16,
                 "max_generated": 4096, "wall_seconds": 120, "answer": 10**12,
                 **changes}
 
-    def test_compatibility_identity(self):
-        for name in ("ProtocolError", "LimitError", "integer", "validate_operation"):
-            self.assertIs(getattr(legacy, name), getattr(shared, name))
+    def test_native_shared_identity(self):
         self.assertIs(native.ProtocolError, shared.ProtocolError)
         self.assertIs(native.LimitError, shared.LimitError)
         self.assertIs(native.integer, shared.integer)

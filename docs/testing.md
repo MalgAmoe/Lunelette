@@ -105,7 +105,7 @@ Frozen Metal shaders, synthetic expanded-FP32 controls and `tests/long_context/h
 
 ## Shared Python tool validation
 
-`tools/tool_validation.py` owns the shared tool-loop exceptions, bounded integer checks and operation-field validation. Both native and application-JSON clients import it directly; `workload_tools.py` retains compatibility exports. Application-JSON parsing/execution stays in `workload_tools.py`, and native profiles, framing checks and task scoring stay in `native_workload_tools.py`. `tests/test_workload_validation.py` checks bounds, exception identity and native import independence; it runs in `make python-test`, including when `PYTHON` selects optimized Python. This extraction does not retire either protocol or establish model correctness.
+`tools/tool_validation.py` owns the shared native tool-loop exceptions, bounded integer checks and operation-field validation. Native profiles, framing checks and task scoring stay in `native_workload_tools.py`. The application-JSON executor and dedicated calculator-v1 scenario/tests are retired; `tool_loop` is explicitly rejected before service effects rather than reinterpreted as native. `tests/test_workload_validation.py` checks shared bounds, exception identity and native import independence; `tests/test_workload_retirement.py` checks retired operation rejection. Both run in `make python-test`, including optimized Python. This retirement does not establish model correctness.
 
 ## Bounded C tool schemas
 

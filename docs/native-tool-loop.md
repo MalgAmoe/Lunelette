@@ -1,6 +1,6 @@
 # Native calculator-v13 service and workload client
 
-The interface passed model-free checks and **one real native calculator run** (see the bounded result below). This is not general tool-reliability evidence. The previous custom JSON calculator experiment failed; its implementation (`tool_loop` in `workload_tools.py`), scenario, and historical evidence remain separate and intact. They are not native-tool evidence.
+The interface passed model-free checks and **one real native calculator run** (see the bounded result below). This is not general tool-reliability evidence. The previous custom JSON calculator experiment failed; its application-JSON executor and dedicated scenario/tests are retired. Its [historical protocol description](tool-loop-v1.md) and original evidence remain separate and preserved. They are not native-tool evidence.
 
 `tools/scenarios/calculator-v13.json` uses `native_tool_loop`. The runner launches the supplied native server with `--tools calculator-v13` and requires `/info` `tools: true` and `conversation_protocol: "native-calculator-v13"`. Supply the usual explicit `--server`, `--native-model`, `--native-tokenizer`, `--scenario`, and new `--output` directory arguments to `tools/real_workload.py`. This is an opt-in model run, not part of the model-free tests.
 

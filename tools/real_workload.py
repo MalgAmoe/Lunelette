@@ -9,8 +9,6 @@ import time
 # Compatibility exports for archived clients; transport mocks target workload_client.
 from workload_client import AdmissionError, Service, strict_object
 
-from workload_tools import run_loop
-from tool_validation import validate_operation
 import native_workload_tools
 import workload_scenarios
 import replay_logits
@@ -24,6 +22,7 @@ def load_scenario(path, context=256):
 def validate_scenario(value, context=256):
     if not isinstance(value, dict):
         raise ValueError("scenario must be an object")
+    workload_scenarios.reject_retired_operations(value)
     v2 = type(value.get("version")) is int and value["version"] == 2
     if v2:
         workload_scenarios.validate(value)
@@ -37,19 +36,16 @@ def validate_scenario(value, context=256):
               "continue": {"id", "budget"}, "cancel": {"id", "budget"},
               "pause": {"seconds"}, "reset": set(), "close": set(),
               "score": {"id", "text"},
-              "tool_loop": {"id", "budget", "max_calls", "max_generated", "wall_seconds", "answer"}}
+              "native_tool_loop": {"id", "budget", "max_calls", "max_generated", "wall_seconds", "answer"}}
     if v2:
         fields.update(checkpoint={"id", "checkpoint"}, restore={"id", "checkpoint"}, replay={"id", "tokens"})
-    fields["native_tool_loop"] = fields["tool_loop"]
-    fields["native_investigation_loop"] = fields["tool_loop"]
-    fields["native_observation_loop"] = fields["tool_loop"]
+    fields["native_investigation_loop"] = fields["native_tool_loop"]
+    fields["native_observation_loop"] = fields["native_tool_loop"]
     for index, op in enumerate(value["operations"]):
         if not isinstance(op, dict) or not isinstance(op.get("op"), str) or op["op"] not in fields:
             raise ValueError("unknown operation")
         if op["op"] in {"native_tool_loop", "native_investigation_loop", "native_observation_loop"}:
             native_workload_tools.validate_operation(op)
-        if op["op"] == "tool_loop":
-            validate_operation(op)
         required = fields[op["op"]]
         if not required <= op.keys() or set(op) - required - {"op", "expect"}:
             raise ValueError("invalid operation fields")
@@ -82,6 +78,7 @@ def validate_scenario(value, context=256):
 
 
 def run_once(service, scenario):
+    workload_scenarios.reject_retired_operations(scenario)
     if (scenario["mode"] in {"free_greedy", "controlled_replay"}) != getattr(service, "native", False):
         raise ValueError("scenario mode must match explicit native/test launch")
     session = None
@@ -130,9 +127,8 @@ def run_once(service, scenario):
                       "success": completed_turn and previous_generation["text"] == op["text"]}
             task_checks.append(result)
             service.record("task_check", **result)
-        elif action in {"tool_loop", "native_tool_loop", "native_investigation_loop", "native_observation_loop"}:
-            loop = native_workload_tools.run_loop if action != "tool_loop" else run_loop
-            result = loop(service, session, op, reserve_id)
+        elif action in {"native_tool_loop", "native_investigation_loop", "native_observation_loop"}:
+            result = native_workload_tools.run_loop(service, session, op, reserve_id)
             tool_reports.append(result)
             if not result["protocol_success"]:
                 return {**result, "mode": scenario["mode"], "tool_loops": tool_reports,
@@ -183,6 +179,7 @@ def run_once(service, scenario):
 
 
 def run(service, scenario):
+    workload_scenarios.reject_retired_operations(scenario)
     if scenario.get("version", 1) == 1:
         return run_once(service, scenario)
     validate_scenario(scenario, getattr(service, "info", {}).get("context_capacity", 256))

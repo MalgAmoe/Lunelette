@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 TOOLS = Path(__file__).resolve().parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -25,6 +26,16 @@ class ClientOwnership(unittest.TestCase):
         self.assertEqual(json.loads('{"a":1}', object_pairs_hook=workload_client.strict_object), {"a": 1})
         with self.assertRaisesRegex(ValueError, "duplicate field a"):
             json.loads('{"a":1,"a":2}', object_pairs_hook=workload_client.strict_object)
+
+    def test_bounded_timeout(self):
+        # Retained from the retired executor suite: this is transport policy.
+        service = workload_client.Service.__new__(workload_client.Service)
+        service.absolute_deadline = 12
+        with patch("workload_client.time.monotonic", return_value=10):
+            self.assertEqual(service.bounded_timeout(120), 2)
+        with patch("workload_client.time.monotonic", return_value=12):
+            with self.assertRaises(TimeoutError):
+                service.bounded_timeout(4)
 
     def test_dependency_direction(self):
         tree = ast.parse((TOOLS / "workload_client.py").read_text())

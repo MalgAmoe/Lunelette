@@ -30,7 +30,17 @@ class ControlFailure(RuntimeError):
     """A refused or unsuccessful control; no rollback is assumed."""
 
 
+def reject_retired_operations(value):
+    """Reject the retired application-JSON route before any service side effect."""
+    if isinstance(value, dict) and isinstance(value.get("operations"), list):
+        if any(isinstance(op, dict) and op.get("op") == "tool_loop"
+               for op in value["operations"]):
+            raise ValueError("tool_loop application-JSON protocol is retired; "
+                             "native tool scenarios require explicit native operations")
+
+
 def validate(value):
+    reject_retired_operations(value)
     fields = {"version", "mode", "prefix_reuse", "repetitions", "wall_seconds", "operations"}
     if not isinstance(value, dict) or set(value) != fields:
         raise ValueError("invalid version 2 fields")
@@ -52,7 +62,7 @@ def validate(value):
         raise ValueError("create first and close final required")
     profiles = {o["op"] for o in ops} & TOOLS
     controls = any(o["op"] in ("checkpoint", "restore") for o in ops)
-    has_tools = any(o["op"] in TOOLS | {"tool_loop"} for o in ops)
+    has_tools = any(o["op"] in TOOLS for o in ops)
     if len(profiles) > 1 or (controls and (has_tools or value["prefix_reuse"] == "legacy")):
         raise ValueError("unsupported control/profile policy")
     planned = 0
@@ -72,7 +82,7 @@ def validate(value):
         if action in ("create", "close") and i not in (0, len(ops) - 1):
             raise ValueError("extra create/close")
         needs_id = action in {"generate", "continue", "cancel", "checkpoint", "restore",
-                              "score", "tool_loop", "replay"} | TOOLS
+                              "score", "replay"} | TOOLS
         if needs_id or "id" in op:
             if not isinstance(op.get("id"), str) or not NAME.fullmatch(op["id"]):
                 raise ValueError("invalid template identity")
@@ -89,7 +99,7 @@ def validate(value):
         ids = []
         if action in ("generate", "continue", "cancel", "checkpoint", "restore", "replay"):
             ids = [op["id"]]
-        elif action in TOOLS | {"tool_loop"}:
+        elif action in TOOLS:
             if type(op.get("max_calls")) is not int or not 1 <= op["max_calls"] <= 16:
                 raise ValueError("invalid max_calls")
             ids = [f"{op['id']}-{n}" for n in range(op["max_calls"] + 1)]
