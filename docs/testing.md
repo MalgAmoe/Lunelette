@@ -44,6 +44,20 @@ To constrain sanitizers to host-only execution, use the same sanitizer flags wit
 
 Service builds recheck `SERVICE_COMMIT` and `SERVICE_DIRTY` each invocation using a content-stable `$(BUILD)/service-identity` input. Both service binaries rebuild when either effective value changes, not when it stays unchanged. Command-line overrides remain supported (for example `make server SERVICE_COMMIT=release SERVICE_DIRTY=false`). Without Git metadata the existing fallback is `unknown` / `false`.
 
+## Offline long-context checker tests
+
+The HTTP checker suite is model-free, but not dependency-free: provider, replay and environment-route tests require an existing interpreter with `mistral_common==1.13.1`. Choose that environment explicitly rather than assuming bare `python3` or an installed `uv` command selects it. Run from the repository root, preserving the virtualenv launcher path (do not resolve its symlink to the base interpreter):
+
+```sh
+REFERENCE_PYTHON=/path/to/existing/.venv/bin/python
+"$REFERENCE_PYTHON" -B -c 'import sys; from importlib.metadata import version; print(sys.executable); v = version("mistral_common"); print(v); sys.exit(0 if v == "1.13.1" else 1)'
+# Proceed only if the version check succeeds.
+"$REFERENCE_PYTHON" -B -m unittest discover -s tests/long_context/http -p 'test_*.py'
+"$REFERENCE_PYTHON" -O -B -m unittest discover -s tests/long_context/http -p 'test_*.py'
+```
+
+This suite exercises mock schedules, synthetic replay, subprocess environment checks and pinned original-driver equivalence; it does not launch the model, dispatch GPU work or require the downloaded tokenizer file. Missing packages are environment failures, not skipped passes. Do not install or synchronize an environment automatically. Other long-context suites have different prerequisites; this command is not blanket discovery of all long-context tests.
+
 ## Optional supplied-data checks
 
 These require macOS native-stub builds and an explicitly supplied official tokenizer, not model weights. The first three use standard-library Python 3 (their existing recipes invoke `python3` directly):

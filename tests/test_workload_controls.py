@@ -224,7 +224,7 @@ class TransportBounds(unittest.TestCase):
         import socket
         import threading
         import time
-        from real_workload import Service
+        from workload_client import Service
         from workload_scenarios import DeadlineExceeded
         listener = socket.socket()
         listener.bind(('127.0.0.1', 0))
@@ -269,7 +269,7 @@ class TransportBounds(unittest.TestCase):
         self.assertEqual(errors, [])
 
     def test_final_body_read_may_close_socket(self):
-        from real_workload import Service
+        from workload_client import Service
         class Connection:
             status = 200
             closed = False
@@ -296,7 +296,7 @@ class TransportBounds(unittest.TestCase):
 
     def test_inactivity_is_not_application_exhaustion_and_body_is_bounded(self):
         import time
-        from real_workload import Service
+        from workload_client import Service
         from workload_scenarios import DeadlineExceeded, ProtocolError
 
         class Connection:

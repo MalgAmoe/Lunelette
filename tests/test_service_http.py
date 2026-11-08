@@ -13,7 +13,9 @@ import subprocess
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import real_workload
-from real_workload import Service, load_scenario, run
+import workload_client
+from workload_client import Service
+from real_workload import load_scenario, run
 
 
 def check(value):
@@ -60,7 +62,7 @@ def runner_faults(directory):
     # Client selection is passed explicitly, checked against /info and recorded.
     for selected in (None, "resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"):
         output = Path(directory) / ("select-" + str(selected))
-        expected = selected or "resident-fp32"
+        expected = selected or "compact-fp8-arithmetic"
         argv = ["runner", "--server", "unused", "--scenario", str(native_scenario),
                 "--output", str(output), "--native-model", "model", "--native-tokenizer", "tokenizer"]
         if selected:
@@ -338,7 +340,7 @@ def stream_faults():
     service = Service.__new__(Service)
     service.connect = lambda: Connection([started, delta, completed])
     service.record = lambda *args, **kwargs: None
-    with patch.object(real_workload.time, "monotonic", side_effect=[0.0, 16.0]):
+    with patch.object(workload_client.time, "monotonic", side_effect=[0.0, 16.0]):
         try:
             service.generate(1, "probe", 3)
         except TimeoutError:

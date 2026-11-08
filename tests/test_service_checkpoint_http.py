@@ -11,7 +11,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from real_workload import Service
+from workload_client import Service
 
 
 def check(value, detail="protocol check failed"):

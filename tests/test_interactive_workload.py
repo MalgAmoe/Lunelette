@@ -12,7 +12,7 @@ from unittest.mock import patch, Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from interactive_workload import Adapter, Output, command
-from real_workload import Service
+from workload_client import Service
 
 SERVER = (sys.argv.pop() if __name__ == '__main__' and len(sys.argv) > 1
           and not sys.argv[-1].startswith('-') else None)
@@ -290,7 +290,7 @@ class Tests(unittest.TestCase):
             self.assertTrue(all(stream.closed for stream in opened))
             opened.clear()
             with patch.object(Path, 'open', opening), patch(
-                    'real_workload.subprocess.Popen', side_effect=OSError('spawn failure')), \
+                    'workload_client.subprocess.Popen', side_effect=OSError('spawn failure')), \
                     patch.object(Service, 'record', side_effect=OSError('log failure')):
                 with self.assertRaisesRegex(OSError, 'spawn failure'):
                     Service('unused', Path(directory) / 'spawn')
@@ -318,7 +318,7 @@ class Tests(unittest.TestCase):
             child = Path(directory) / 'child'
             child.write_text('#!/usr/bin/env python3\nimport sys,time\nsys.stdout.write("partial")\nsys.stdout.flush()\ntime.sleep(10)\n')
             child.chmod(0o700)
-            with patch('real_workload.subprocess.Popen', popen), patch.object(
+            with patch('workload_client.subprocess.Popen', popen), patch.object(
                     Service, 'record', side_effect=OSError('record failed')), patch.object(
                     Service, 'write_diagnostic', side_effect=OSError('disk failed')):
                 with self.assertRaises(Exception):

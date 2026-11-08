@@ -6,6 +6,7 @@ import sys
 import unittest
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
+from workload_client import Service
 import real_workload as w
 
 SAMPLE = Path(__file__).resolve().parents[1] / 'tools/scenarios/replay-v2.json'
@@ -98,7 +99,7 @@ class Replay(unittest.TestCase):
             def close(self):
                 pass
         wire = Wire()
-        service = object.__new__(w.Service)
+        service = object.__new__(Service)
         service.native = True
         service.evaluation_mode = 'controlled_replay'
         service.request_seconds = 120
@@ -126,9 +127,9 @@ class Replay(unittest.TestCase):
 
     def test_owned_startup_arguments(self):
         with self.assertRaises(ValueError):
-            w.Service('unused', 'unused', native_args=['--tools', 'calculator-v13'], evaluation_mode='controlled_replay')
+            Service('unused', 'unused', native_args=['--tools', 'calculator-v13'], evaluation_mode='controlled_replay')
         with self.assertRaises(ValueError):
-            w.Service('unused', 'unused', native_args=['--replay-logits', '/tmp/x'])
+            Service('unused', 'unused', native_args=['--replay-logits', '/tmp/x'])
 
 
 if __name__ == '__main__':

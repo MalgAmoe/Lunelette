@@ -109,3 +109,9 @@ Work receipts count actual API calls/attempts and commits, including failed work
 * [Scenarios](workload-scenarios.md): versioned recipes, asynchronous control polling, repetition/identity/deadline bounds and scoring.
 * [Controlled replay](controlled-replay.md): optional diagnostic only; paired `--evaluation-mode controlled-replay --replay-logits FILE`, exclusive capture, at most 16 process-lifetime forced selections, no tools or task-quality claims. Ordinary greedy requests do not accept replay tokens.
 * [Runtime](metal.md) and [lookup strategy](fp8-lookup.md): execution/storage and strategy-specific evidence. Milestone pages preserve historical observations, not the current interface contract.
+
+## Python client ownership
+
+`tools/workload_client.py` owns `Service`, `AdmissionError` and duplicate-key rejection (`strict_object`). Both workload entrypoints import it directly; importing any of these modules does not parse arguments or launch a child. The shared client preserves bounded HTTP/event validation, deadlines, cancellation, retained-state reconciliation, evidence files and owned-child cleanup. Scenario policy, scoring and CLI parsing remain in their callers; tool validation ownership is unchanged.
+
+`real_workload` re-exports these three names for archived scripts. Maintained transport tests should import from `workload_client` and patch transport dependencies there (for example `workload_client.subprocess.Popen`); tests replacing a CLI launch should patch the entrypoint’s local `Service` binding. This extraction does not introduce a public SDK or change CLI defaults.

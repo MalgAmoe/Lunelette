@@ -6,7 +6,8 @@ from pathlib import Path
 import sys
 import tempfile
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from real_workload import Service, load_scenario, run
+from workload_client import Service
+from real_workload import load_scenario, run
 
 
 def check(condition, detail):

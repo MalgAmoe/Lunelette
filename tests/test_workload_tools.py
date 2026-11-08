@@ -9,7 +9,8 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from real_workload import Service, load_scenario, run
+from workload_client import Service
+from real_workload import load_scenario, run
 from workload_tools import ProtocolError, parse, run_loop
 
 OP = {"op": "tool_loop", "id": "calc", "budget": 100, "max_calls": 2,
@@ -285,9 +286,9 @@ class ToolTests(unittest.TestCase):
                     load_scenario(path)
         service = Service.__new__(Service)
         service.absolute_deadline = 12
-        with patch("real_workload.time.monotonic", return_value=10):
+        with patch("workload_client.time.monotonic", return_value=10):
             self.assertEqual(service.bounded_timeout(120), 2)
-        with patch("real_workload.time.monotonic", return_value=12):
+        with patch("workload_client.time.monotonic", return_value=12):
             with self.assertRaises(TimeoutError):
                 service.bounded_timeout(4)
 

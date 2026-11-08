@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 
-from real_workload import AdmissionError, Service, strict_object
+from workload_client import AdmissionError, Service, strict_object
 from workload_scenarios import ControlFailure
 import native_workload_tools
 

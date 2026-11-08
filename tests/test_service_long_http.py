@@ -10,7 +10,7 @@ import time
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 import real_workload
-from real_workload import Service
+from workload_client import Service
 
 
 def check(value, detail="check failed"):
