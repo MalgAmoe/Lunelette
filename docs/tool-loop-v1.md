@@ -1,52 +1,24 @@
-# Client tool loop v1 (diagnostic only)
+# Retired application-JSON tool loop: historical protocol
 
-> Historical protocol description only. Application-JSON `tool_loop` execution, its calculator-v1 scenario and dedicated executor tests are retired. Old invocations below are not supported commands: scenario loading and direct execution reject `tool_loop` explicitly, without translating it to native tools. Use the separately specified [native tool protocol](native-tool-loop.md) for current functionality. The original description below is retained as historical evidence; code/scenario filenames describe the pre-retirement tree.
+Application-JSON `tool_loop`, its calculator-v1 scenario and dedicated executor tests are retired. Old invocations are unsupported and rejected before service effects, not translated to native tools. Use the [native tool protocol](native-tool-loop.md) for the supported fixed calculator, lookup and observation profiles, and [testing](testing.md#shared-python-tool-validation) for the current validation owner.
 
-`tools/real_workload.py` accepts the reusable `tool_loop` operation in a version-1 scenario. Tools execute only in the Python client. **native_tools: false**: this is an application JSON protocol, not native function calling. No engine changes, new role, or assistant decode/re-encode are involved. The engine retains its assistant tokens; results append through the existing user-message framing in the same session.
+The first bounded real-model application-JSON observation failed: fenced invented `tool_result` JSON was rejected, task score stayed null, zero tools executed and no result was appended. The appearance of 43 was not successful tool use. No prompt repair or retry made it pass. The old schema, execution bounds and original failed observation remain historical evidence, separate from native-tool evidence.
 
-## Protocol
+## Retrieve the exact original
 
-The entire assistant response must be one JSON object, optionally surrounded by JSON whitespace. No prose or markdown fences. Exactly these fields are accepted:
-
-```json
-{"version":1,"type":"tool","id":"sum1","name":"calculator","arguments":{"operation":"add","a":19,"b":24}}
-```
-
-```json
-{"version":1,"type":"final","answer":43}
-```
-
-Calculator operations are `add`, `subtract`, and `multiply`. Inputs must be exact JSON integers in [-1000000, 1000000]; results and final answers are bounded to +/-1000000000000. Booleans, floats, nonfinite constants, duplicate or unknown fields, trailing content, oversized integers, strings as numbers, and unknown operations/tools are rejected. Responses are limited to 2048 UTF-8 bytes; call IDs match `[A-Za-z0-9_-]{1,32}` and cannot repeat within a loop. There is no eval, arbitrary expression language, path access, shell, network, lookup, or sensor tool.
-
-Execution requires a `completed` terminal event, `stop_reason: eos`, and `state: ready`, matching request/session identities, `session_valid: true`, and `recovery: none` in an active integer session. Native responses require retained request and session metadata: completed generate identity, matching counts/state, valid token IDs with exactly one final generated EOS, and coherent ready ledger counters, remaining capacity, and generated suffix. Contradictions are rejected before executing a tool or accepting a final. A budget stop never executes a tool, even if its JSON happens to be complete and valid. Cancellation, runtime errors, and invalid accounting also execute nothing.
-
-Results are deterministic, compact, sorted JSON with this label, appended as `role: user` using `/sessions/{id}/messages`:
-
-```text
-APPLICATION_TOOL_RESULT_V1 {"id":"sum1","name":"calculator","result":43,"version":1}
-```
-
-## Scenario operation and limits
-
-See `tools/scenarios/calculator-v1.json` (19 + 24 = 43). Historical quality cases are unchanged. Submit the initial task using ordinary `create`/`message` operations, then `tool_loop`; follow with `close` if successful.
-
-Required operation fields: `op`, `id` (ASCII identifier, 1–48 characters), `budget` (1–256 tokens per request), `max_calls` (1–16 calculator calls), `max_generated` (1–4096 tokens across responses, including EOS), `wall_seconds` (1–120 integer seconds), and `answer` (expected bounded integer). Request IDs are deterministically `{id}-{turn}`, reserved alongside ordinary generation IDs; collisions fail rather than replaying. A final-response request is permitted after the last allowed tool call. Each request's budget is clamped to the remaining total token allowance.
-
-Use the existing CLI with `--scenario tools/scenarios/calculator-v1.json` and its normal `--server`, `--output`, `--native-model`, `--native-tokenizer` options. Use `--native-context 4352 --native-chunk 256` for multi-turn headroom; context 256 can exhaust its ledger before the final response. This free-greedy example needs an explicit native launch; it is not a new launcher. The fixed diagnostic server does not produce calculator JSON. Tests instead use scripted model-free service responses.
-
-An absolute monotonic deadline covers generation, local tools, and result append, with checks at each boundary and socket timeouts capped by the remaining wall time using the existing transport timeout handling. It is not a hard process-preemption guarantee. Timeouts do not imply server cancellation or a valid reusable KV state. Generation may already have mutated the session on failure; it is not left untouched. Failure stops the scenario; inspect/reset or close explicitly before reusing the session. No automatic repair or retry is attempted.
-
-`client.ndjson` retains responses, tool observations/time, and loop reports. `result.json` separates `failure_kind: protocol`, `runtime`, or `limit` from a valid but wrong final (`protocol_success: true`, `task_success: false`). Protocol, runtime, and limit failures leave task score null and yield CLI failure. Wrong finals retain normal diagnostic CLI success; inspect the score. Tool timing and scores are diagnostic only, never numerical correctness or performance evidence. A direct final is allowed; tool usage is observed, not required by the score. Context exhaustion is a runtime failure, not silently truncated input. Successful model tool compliance, native tool support and successful-task latency remain unestablished. See the bounded observation below.
-
-Model-free checks (also run with `python3 -O`):
+The exact pre-closeout document is in Git baseline `989efb62c84433e1e2cccba23f2730722d4ac40c` at `docs/tool-loop-v1.md`:
 
 ```sh
-python3 tests/test_workload_tools.py
-python3 tests/test_service_http.py ./build/test_service_server
+git show 989efb62c84433e1e2cccba23f2730722d4ac40c:docs/tool-loop-v1.md
 ```
 
-## First bounded real-model observation
+This requires that Git object to be available in your checkout; a source-only distribution or shallow clone may not contain it. Exact before-images were also preserved in a local development archive outside the repository, with hashes and original link bases. That archive and the external experiment payloads are **not shipped** here; Git retrieval supplies the document, not model files, fixtures or campaign artifacts.
 
-One unchanged calculator-v1 run used compact FP8/MPS, context 4352/chunk 256 and the scenario limits above. It generated 37 tokens ending at natural EOS, but returned fenced JSON with an invented `type: "tool_result"` and `result: 43`. That is neither a valid tool request nor the required final-answer schema.
+## Historical section links
 
-The client rejected the response: protocol failure, task score null, zero tools executed, no result append or continuation. Server shutdown was clean. No prompt repair or inference retry occurred. The presence of 43 is not successful tool use. This establishes fail-closed behavior on this real response, not a successful real-model tool loop; positive continuation coverage remains model-free.
+These compatibility anchors refer to sections of the exact original above, not current invocation instructions.
+
+<a id="client-tool-loop-v1-diagnostic-only"></a>
+<a id="protocol"></a>
+<a id="scenario-operation-and-limits"></a>
+<a id="first-bounded-real-model-observation"></a>

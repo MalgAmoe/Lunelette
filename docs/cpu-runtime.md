@@ -1,86 +1,27 @@
-> Historical provenance: standalone CPU inference and its APIs/commands were retired after `4d4f8f8`. Nothing below is a current invocation guide. Use [the production runtime](metal.md) for maintained execution.
+# Retired CPU runtime: historical contracts
 
-# CPU runtime and CLI contracts
+Standalone CPU inference and its APIs were retired after `4d4f8f8`. The former two-shard BF16 CLI, forward/cache APIs and scalar-model execution descriptions are historical, not supported invocation instructions. CPU host parsing, tokenization, generation policy and YaRN preparation remain required; this is not retirement of host work or host tests.
 
-All shell commands in this guide run from the repository root, not `docs/`. External weights and fixtures are optional, caller-supplied, and not bundled or downloaded automatically. Paths in examples are repository-local placeholders.
+Use the [Metal runtime](metal.md), [service contract](service.md), [testing guide](testing.md) and [current validation](validation.md). Supported storage includes both compact reconstruction choices and explicit full FP32 residency; no second C inference engine is required for diagnostics.
 
-Independently tested scalar CPU kernels include stable softmax, learned-weight RMSNorm with epsilon, row-major matrix-vector multiply (`y = W*x`, explicit rows and columns, no bias), and SiLU gated product (`SiLU(gate) * up`). These are primitives used by the first-block and full-forward paths described below.
+## Retrieve the exact original
 
-The scalar primitives use float32 products/accumulation and `sqrtf`/`expf`; softmax retains its original double-precision sum. RMSNorm sums squares before writing output; it supports exact in-place input or weight output. Gated product supports exact in-place output on either input. Partial output/input overlap is forbidden; matrix-vector output must be disjoint from its inputs. See `include/lunelette.h` for buffer lengths, ownership, overlap and error contracts.
+The exact pre-closeout document is in Git baseline `989efb62c84433e1e2cccba23f2730722d4ac40c` at `docs/cpu-runtime.md`:
 
-Null pointers, zero dimensions, byte-size overflow, and non-positive/non-finite RMSNorm epsilon are rejected before writing output. Array elements are not scanned for finiteness; arithmetic overflow and non-finite results are not errors. Sign-split SiLU avoids exponential overflow for finite gates, but does not prevent final-product overflow. Sequential float reductions need not match PyTorch's reduction order bit-for-bit; RMSNorm is not an overflow-resistant norm.
-
-Always-active synthetic tests cover hand-calculated values, weighted/zero-vector RMSNorm, epsilon, non-square matrices in both directions, finite SiLU extremes, in-place cases and invalid arguments. Arithmetic checks use combined absolute (1e-6) and relative (2e-6) tolerances for these small examples, with error reports on failure. Real-weight layer-0 norm/projection comparisons are in the [validation guide](validation.md); the small unit tests alone are not evidence of model correctness.
-
-## Bounded text CLI
-
-```text
-./build/lunelette --weights /path/to/model-00001-of-00002.safetensors \
-  --weights2 /path/to/model-00002-of-00002.safetensors \
-  --tokenizer /path/to/tekken.json --system 'Be concise.' \
-  --prompt 'What is 17 + 25? Answer with the number only.' --max-new-tokens 3
-# Prints 42 (without an added newline).
+```sh
+git show 989efb62c84433e1e2cccba23f2730722d4ac40c:docs/cpu-runtime.md
 ```
 
-All resources are explicit; this CPU path needs no downloads, Python or external runtime dependencies beyond C/math libraries. Only this checkpoint's 3B text layout and supported Tekken 13 JSON are accepted. Default framing is exactly **BOS + [SYSTEM_PROMPT]system[/SYSTEM_PROMPT] + [INST]user[/INST]**, omitting the entire system block when `--system` is absent. There are no extra spaces or assistant marker. The system control IDs are 17/18, user control IDs 3/4, BOS 1. **No implicit system message** is inserted: in particular, this deliberately does not reproduce the checkpoint's large default Jinja system prompt. Use `--system 'Be concise.'` explicitly for the example. Only one system/user turn is supported: no tools, history, vision or assistant prefill. Literal special-token spellings in user/system text remain ordinary text, never control IDs. Empty text is allowed; a missing `--prompt` is an error.
+This requires that Git object to be available in your checkout; a source-only distribution or shallow clone may not contain it. Exact before-images were also preserved in a local development archive outside the repository, with hashes and original link bases. That archive and the external experiment payloads are **not shipped** here; Git retrieval supplies the document, not model files, fixtures or campaign artifacts.
 
-`--raw` instead uses BOS + ordinary prompt text, and forbids `--system`. For example, `--raw --prompt 'The capital of France is' --max-new-tokens 1` generates ` Paris` (leading space included) with the same resource flags. Greedy decoding is deterministic (lowest ID wins ties), cached by default; `--uncached` recomputes the prefix as a correctness baseline. Weights are still reread; this scalar CPU implementation is not optimized for interactive speed.
+## Historical section links
 
-`--max-new-tokens` accepts decimal 0..256, default 32. Prompt plus generated context cannot exceed 256 tokens; generation stops on EOS, budget or context limit. Oversized prompts fail. Each text field is strict UTF-8, at most 4096 bytes; argv cannot represent embedded NUL. Unknown/duplicate options, missing values and invalid budgets fail with nonzero exit. `--help` and `--version` work alone. Values beginning with `--` are reserved as options.
+These compatibility anchors refer to sections of the exact original above, not current invocation instructions.
 
-`--dump-prompt-ids` prints space-separated framed IDs and exits **without opening weights or computing the model**; only tokenizer and prompt are required. `--dump-output-ids` writes generated IDs, including EOS, to stderr after generation and successful decoding, before writing stdout. Normal stdout is just decoded generated bytes, accumulated and decoded together at the end so token byte fragments are preserved. EOS is excluded from text; any other generated special ID fails clearly rather than being silently dropped. Output is not streamed, and a budget cut may end with incomplete UTF-8 bytes.
-
-Default tests include tokenizer synthetic contracts, isolated chat framing and CLI argument rejection, without fixtures/models/Python. Tokenizer scratch files and CLI test artifacts are created in the selected build directory. Historical optional real CLI checks matched official Mistral tokenizer IDs for explicit/absent/empty system, Unicode, raw and literal special spellings. The example produced `42` (IDs 1052, 1050, 2), and raw capital produced ` Paris` (6993), agreeing with independent Python reference IDs. Text agreement alone does not establish numerical correctness; see the [validation guide](validation.md).
-
-## Rotary embeddings and attention (scalar baseline)
-
-`include/attention.h` exposes two independent, caller-buffer APIs:
-
-- `lunelette_ministral3_yarn`: in-place Q `[T,32,128]`, K `[T,8,128]`, split-half rotation, absolute positions in `[0,262144)`. Fixed to Ministral-3-3B-Instruct-2512 checkpoint revision `b6d637bef2393152b3da2b2fde72eecdee30557e`: theta=1e6, factor=16, original context=16384, beta_fast/slow=32/1, default truncated correction range. mscale=mscale_all_dim=1 makes the cos/sin amplitude ratio **1**. Only Q receives `1 + 0.1*log(1 + floor(position/16384))` afterward. This intentionally is not a generic model configuration API.
-- `lunelette_causal_gqa`: token-major FP32 Q/K/V, row-order causal prefill, query head `h` maps to KV head `h/4` for 32/8 heads. Generic positive head dimensions and divisible head counts are supported for synthetic tests. The output is `[T,32,128]` (flattenable to `[T,4096]`), **before o_proj**. Caller supplies `T` float scratch elements. No weights, cache or allocation.
-
-Contracts, overflow checks and failure behavior are documented in the header. The scalar implementation uses float dot products and max-subtracted float softmax. It is quadratic in sequence length; it is a correctness baseline, not an optimized long-context implementation. No padding, batching, dropout, KV cache is provided by these attention APIs; output projection and feedforward are composed separately in the first-block API below. See [NOTICE](../NOTICE) for upstream formula attribution and license.
-
-`make test` includes basis rotations, golden official FP32 YaRN samples at positions 0/1/16383/16384/16385, causal masking, GQA mapping, nonuniform probabilities, stable large-score softmax, invalid arguments and size overflow. The small golden constants are self-contained; no Python/model is required.
-
-## Complete first transformer block
-
-`include/block.h` / `src/block.c` expose `lunelette_first_block`: actual embedding rows -> input RMSNorm -> QKV -> YaRN -> causal GQA -> output projection -> residual -> post-attention RMSNorm -> SiLU(gate projection) * up projection -> down projection -> residual. Returns token-major FP32 `[N,3072]`, corresponding to official `hidden_states[1]` (before layer 1, not final model normalization). The [official decoder and MLP forward](https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/models/ministral3/modeling_ministral3.py) confirm the two pre-norm residual branches and bias-free gated MLP.
-
-This deliberately fixes the checkpoint's 3B architecture: hidden 3072, intermediate 9216, 32 query / 8 KV heads, head dimension 128, RMS epsilon 1e-5, vocabulary 131072. It does not parse model configuration or the shard index. The inspected checkpoint index places embeddings and **all layer-0 weights in shard 00001**. Every required tensor's BF16 dtype, rank and exact shape are checked before use. One row-major matrix is expanded at a time (maximum 108 MiB); embedding rows only are read. Token-major activation storage is bounded to 256 tokens (about 37 MiB maximum). No entire model allocation, retained weight cache, framework, dependencies or Python runtime is needed. Weights are reread on each call: clarity and bounded memory, not speed.
-
-The borrowed shard remains open and unchanged; the function owns and frees its workspace. Caller owns IDs and output; output is unchanged on failure. See the header for lifetimes and concurrency restrictions. Finite checkpoint values are assumed, consistent with the underlying scalar kernels; arbitrary corrupt nonfinite weights are not exhaustively scanned. Positions are consecutive from zero, one sequence, no padding/cache. This stops at the first block only.
-
-## Complete uncached 3B text forward
-
-`include/forward.h` exposes `lunelette_forward(shard1, shard2, ids, count, hidden, logits, hidden_13, error, capacity)`. Supply two distinct already-open shards explicitly; their order is immaterial. No configuration/index parser is added. The inspected checkpoint config fixes **26 layers, hidden 3072, vocabulary 131072, intermediate 9216, 32/8 heads of dimension 128, epsilon 1e-5**, YaRN as in the attention section, no sliding window, and tied word embeddings. The index places the final `language_model.model.norm.weight` in shard 00002 and embeddings in shard 00001; layer tensors are resolved independently, including layers split across shards. All required shapes/ranks/BF16 dtypes and duplicate required names are checked before execution. Unrelated vision weights are ignored, never executed.
-
-The original first-block API now wraps the same private layer executor at index zero. The forward function returns caller-owned final-normalized `hidden[N,3072]` and last-token-only `logits[131072]`. Optional `hidden_13[N,3072]` captures the residual after 13 blocks, **not** a normalized activation. The final hidden state corresponds to official `hidden_states[26]`, which already includes final RMSNorm. The tied head is `embed_tokens.weight @ hidden[-1]`, without bias or softmax. See the header for disjoint-buffer, lifetime and concurrency contracts. All outputs remain unchanged on failure, even during the last vocabulary row read. The diagnostic buffer, if supplied, must be writable and disjoint from inputs and outputs. Allocation/read failures release all internally owned storage.
-
-Memory is bounded: one expanded matrix at a time (108 MiB maximum), approximately 37 MiB layer workspace at 256 tokens, plus current hidden state, optional checkpoint and transactional logits. Matrices are freed between layers; weights are streamed again on each call. Vocabulary projection expands **one 3072-element row at a time**, not the whole embedding matrix or FP32 model. Activations and projection/attention reductions remain FP32; model RMSNorm now uses FP32 squares, a **double sum**, rounded FP32 mean, and FP32 scale/output. The public `lunelette_rmsnorm` sequential-FP32 contract remains unchanged. This is not a generic tensor/backend framework or an optimized runtime.
-
-## Greedy generation from fixed IDs
-
-`include/generation.h` provides `lunelette_generate` over two borrowed open model shards. It recomputes the entire prefix for each token; model math is unchanged. The caller owns the result (a fixed-size struct, no destructor):
-
-```c
-lunelette_generation_config config = LUNELETTE_GENERATION_DEFAULT;
-config.max_new_tokens = 3;
-/* Default EOS is token 2; change config.eos_token explicitly if needed. */
-int64_t prompt[] = {1, 1784, 8961, 1307, 5498, 1395};
-lunelette_generation_result result;
-char error[256];
-int status = lunelette_generate(&first, &second, prompt, 6, &config,
-                                &result, error, sizeof error);
-```
-
-IDs must come from the exact checkpoint tokenizer; this API does not tokenize or apply a chat template. Prompt length and total returned context are bounded by 256; budget is 0..256. A full 256-token prompt returns context-stop without executing forward. Generated EOS is included; prompt EOS does not stop the loop. Exact score ties choose the lowest ID. Any nonfinite logit rejects the entire operation, leaving the result unchanged (also for failures after earlier steps). Stop reason distinguishes EOS, budget, and context; precedence and ownership are documented in the header. `lunelette_generate_with_logits` exposes the same loop with a small synchronous callback for tests or per-step logits observation.
-
-### Bounded KV cache
-
-`include/cache.h` provides an opaque cache for the same Single 3B text model, borrowing two open shards. Initialize with an explicit capacity **1..256**, prefill once with `lunelette_cache_forward`, then append exactly one token per call. `lunelette_cache_length` reports only successfully evaluated tokens. Reset drops sequence state without touching weights; free releases the cache, not the shards. The cache stores per-layer rotated FP32 keys and values with eight KV heads (26 × 2 × capacity × 8 × 128 floats; 52 MiB at 256), with absolute RoPE positions. Projection weights remain transient, as in the uncached baseline.
-
-`lunelette_generate_cached` requires capacity 256, resets for each prompt, and uses the existing greedy generation/EOS/config contracts. The last sampled token is not evaluated into the cache. Forward failure leaves both logits and committed length unchanged: any partially written cache tail is outside the live prefix and will be overwritten on retry. Shards must remain open and unchanged; calls sharing shards/cache are not concurrent. The uncached API remains available.
-
-
-See [validation schemas and commands](validation.md), [current bounded full-depth criteria](full-depth-validation.md), and [Metal contracts](metal.md).
+<a id="cpu-runtime-and-cli-contracts"></a>
+<a id="bounded-text-cli"></a>
+<a id="rotary-embeddings-and-attention-scalar-baseline"></a>
+<a id="complete-first-transformer-block"></a>
+<a id="complete-uncached-3b-text-forward"></a>
+<a id="greedy-generation-from-fixed-ids"></a>
+<a id="bounded-kv-cache"></a>

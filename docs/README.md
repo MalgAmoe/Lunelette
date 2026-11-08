@@ -28,19 +28,26 @@ Start with the repository [quickstart](../README.md). Current defaults and measu
 - [Model facts](model-facts.md), [safetensors contracts](safetensors.md).
 - [Builder specification](real-workload-spec.md): original requirements and later research amendment; consult status for outcomes, rather than treating every research candidate as pending integration.
 
-## Milestones and history
+<a id="milestones-and-history"></a>
 
-These documents preserve decisions, failures and source-bound evidence. They are not a sequence of additional tasks to rerun. Current contracts live in the [runtime](metal.md), [service](service.md), [testing](testing.md) and [validation](validation.md) guides; milestone results remain source-bound evidence.
+## Retained rationale, controls and evidence
 
-- [M1 plan](real-workload-plan.md), [M1 protocol](real-workload-m1.md): deterministic foundation.
+These mixed-purpose documents stay in the repository because they explain active diagnostic controls, design invariants or meaningful validation limitations as well as source-bound results. They are not a sequence of tasks to rerun. Current contracts live in the [runtime](metal.md), [service](service.md), [testing](testing.md) and [validation](validation.md) guides; historical defaults and results do not supersede those contracts. Both compact choices and explicit full FP32 residency remain supported.
+
+- [M1 diagnostic contract](real-workload-m1.md): deterministic model-free foundation.
 - [M2](real-workload-m2.md): native service.
 - [M3](real-workload-m3.md): numerical disposition and task failures.
 - [M4](real-workload-m4.md): compact storage.
 - [M5](real-workload-m5.md): prefix reuse and checkpoints.
 - [M6](real-workload-m6.md): long context and chunked ingestion.
-- [Tool loop v1](tool-loop-v1.md): historical description of the retired application-JSON protocol, not current usage.
-- [CPU/BF16 validation archive](validation-history.md): preserved retired commands and findings.
-- [CPU runtime](cpu-runtime.md): retired standalone CPU implementation.
-- [Full-depth validation history](full-depth-validation.md): historical thresholds and evidence; not current-checkpoint numerical acceptance.
+## Historical compatibility pointers
 
-Keep historical links and raw evidence intact when reorganizing documentation.
+The following pages retain their paths and original section anchors but no longer duplicate detailed retired commands or implementation chronology. Each gives an exact `git show` command using baseline `989efb62c84433e1e2cccba23f2730722d4ac40c` and its original repository-relative path. The baseline must be present in local Git history. Exact local archival copies with hashes and original link bases were preserved outside the engine; they are not shipped or required to use this repository. Neither Git documentation nor these pointers bundle external experiment payloads.
+
+- [M1 implementation plan](real-workload-plan.md): completed sequence; active control explained above.
+- [Application-JSON tool loop](tool-loop-v1.md): retired protocol and failed observation, not native tools.
+- [CPU/BF16 validation](validation-history.md): retired measurements and strict discrepancy.
+- [CPU runtime](cpu-runtime.md): retired standalone execution, not CPU host work.
+- [BF16 full-depth criteria](full-depth-validation.md): historical envelope, not current-checkpoint acceptance.
+
+No controls, source snapshots, model files, builds, manifests or receipts were retired or rewritten by this documentation closeout. Current-source validation inventories include documentation: edited bytes intentionally invalidate earlier build-source receipts; create new receipts for new builds rather than rewriting historical provenance.
