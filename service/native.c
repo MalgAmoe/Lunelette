@@ -326,21 +326,6 @@ static int native_restore(void *context)
     return 1;
 }
 
-static int copy_logits(void *context, const int64_t *ids, size_t count,
-                       float *logits, char *error, size_t capacity)
-{
-    native_service *n = context;
-    (void)ids;
-    (void)count;
-    (void)error;
-    (void)capacity;
-    if (!n->logits) {
-        return -1;
-    }
-    memcpy(logits, n->logits, LUNELETTE_VOCAB_SIZE * sizeof(*logits));
-    return 0;
-}
-
 static int write_u32(FILE *file, uint32_t value)
 {
     unsigned char bytes[4] = {value & 255, (value >> 8) & 255,
@@ -382,31 +367,40 @@ static int capture(native_service *n, unsigned forced, unsigned greedy)
 static int native_select(void *context, int replay, unsigned forced)
 {
     native_service *n = context;
-    int64_t ids[SERVICE_CONTEXT_MAX];
-    for (unsigned i = 0; i < n->length; i++) {
-        ids[i] = n->prefix[i];
-    }
-    lunelette_generation_config config = {1, 2};
-    lunelette_generation_result result;
-    char error[512];
+    /* Selection and capture run under the session worker's exclusive ownership.
+     * Runtime logits are borrowed: no reset/append/restore may intervene here.
+     * Failure returns -1 without publishing emitted/pending; capture may leave a
+     * partial record, but latches replay_failed and never advances its index. */
     if (n->pending || (replay && (!n->replay_file || n->replay_failed ||
         n->replay_index >= SERVICE_REPLAY_TOKENS ||
         (!(forced >= 1000 && forced < LUNELETTE_VOCAB_SIZE) && forced != 2)))) {
         return -1;
     }
-    if (lunelette_generate_with_logits_capacity(copy_logits, n, ids, n->length, n->capacity,
-                                       &config, &result, error, sizeof(error))) {
+    /* Bound length before reading even the first prefix ID. Full context has no
+     * next-token capacity, but still validate its IDs just as generation does. */
+    if ((n->capacity != LUNELETTE_CONTEXT_LIMIT &&
+         n->capacity != LUNELETTE_LONG_CONTEXT_LIMIT) ||
+        !n->length || n->length > n->capacity) {
+        return -1;
+    }
+    for (unsigned i = 0; i < n->length; i++) {
+        if (n->prefix[i] >= LUNELETTE_VOCAB_SIZE) {
+            return -1;
+        }
+    }
+    if (n->length == n->capacity) {
+        return -1;
+    }
+    int64_t token;
+    char error[512];
+    if (lunelette_select_greedy(n->logits, &token, error, sizeof(error))) {
         fprintf(stderr, "generate: %s\n", error);
         return -1;
     }
-    if (result.count != 1) {
-        fprintf(stderr, "generate: expected one token, got %zu\n", result.count);
+    if (replay && !capture(n, forced, (unsigned)token)) {
         return -1;
     }
-    if (replay && !capture(n, forced, (unsigned)result.tokens[0])) {
-        return -1;
-    }
-    n->emitted = replay ? forced : (unsigned)result.tokens[0];
+    n->emitted = replay ? forced : (unsigned)token;
     n->pending = 1;
     return (int)n->emitted;
 }

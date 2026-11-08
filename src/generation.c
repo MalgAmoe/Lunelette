@@ -5,6 +5,34 @@
 #include <stdlib.h>
 #include <string.h>
 
+int lunelette_select_greedy(const float *logits, int64_t *token,
+    char *error, size_t capacity)
+{
+    if (!logits || !token) {
+        if (error && capacity) {
+            snprintf(error, capacity, "selection: require logits and token");
+        }
+        return -1;
+    }
+    size_t best = 0;
+    for (size_t i = 0; i < LUNELETTE_VOCAB_SIZE; i++) {
+        if (!isfinite(logits[i])) {
+            if (error && capacity) {
+                snprintf(error, capacity, "selection: nonfinite logit at token %zu", i);
+            }
+            return -1;
+        }
+        if (logits[i] > logits[best]) {
+            best = i;
+        }
+    }
+    *token = (int64_t)best;
+    if (error && capacity) {
+        error[0] = '\0';
+    }
+    return 0;
+}
+
 int lunelette_generate_with_logits_capacity(lunelette_logits_fn next, void *context,
     const int64_t *prompt, size_t count, size_t context_limit,
     const lunelette_generation_config *config,
@@ -73,22 +101,13 @@ int lunelette_generate_with_logits_capacity(lunelette_logits_fn next, void *cont
             free(logits);
             return -1;
         }
-        size_t best = 0;
-        for (size_t i = 0; i < LUNELETTE_VOCAB_SIZE; i++) {
-            if (!isfinite(logits[i])) {
-                if (error && capacity) {
-                    snprintf(error, capacity, "generation: nonfinite logit at step %zu token %zu",
-                             pending.count, i);
-                }
-                if (ids != local_ids) {
-                    free(ids);
-                }
-                free(logits);
-                return -1;
+        int64_t best;
+        if (lunelette_select_greedy(logits, &best, error, capacity)) {
+            if (ids != local_ids) {
+                free(ids);
             }
-            if (logits[i] > logits[best]) {
-                best = i;
-            }
+            free(logits);
+            return -1;
         }
         ids[count++] = (int64_t)best;
         pending.tokens[pending.count++] = (int64_t)best;

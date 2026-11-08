@@ -44,6 +44,23 @@ static int next(void *opaque, const int64_t *ids, size_t count, float *logits,
 
 int main(void)
 {
+    float *scores = calloc(LUNELETTE_VOCAB_SIZE, sizeof(*scores));
+    CHECK(scores);
+    int64_t selected = -7;
+    char diagnostic[128];
+    CHECK(lunelette_select_greedy(NULL, &selected, diagnostic, sizeof diagnostic) == -1);
+    CHECK(selected == -7 && diagnostic[0]);
+    CHECK(lunelette_select_greedy(scores, NULL, NULL, 0) == -1);
+    scores[0] = -0.0f;
+    CHECK(!lunelette_select_greedy(scores, &selected, diagnostic, sizeof diagnostic));
+    CHECK(selected == 0 && !diagnostic[0]);
+    scores[0] = 0.0f;
+    scores[1] = -0.0f;
+    CHECK(!lunelette_select_greedy(scores, &selected, NULL, 0) && selected == 0);
+    scores[LUNELETTE_VOCAB_SIZE - 1] = NAN;
+    selected = -7;
+    CHECK(lunelette_select_greedy(scores, &selected, NULL, 0) == -1 && selected == -7);
+    free(scores);
     int64_t ids[257] = {2}; /* Prompt EOS does not stop generation. */
     char error[256];
     lunelette_generation_config config = LUNELETTE_GENERATION_DEFAULT;

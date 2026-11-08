@@ -36,6 +36,15 @@ typedef struct {
 typedef int (*lunelette_logits_fn)(void *context, const int64_t *ids, size_t count,
                                   float *logits, char *error, size_t capacity);
 
+/* Scan all LUNELETTE_VOCAB_SIZE borrowed logits, rejecting every NaN/Inf.
+ * Strict greater-than chooses the lowest ID on ties (including signed zero).
+ * Returns 0 and clears error on success, -1 with diagnostic on failure; token
+ * is unchanged on failure. Required logits/token and optional error must be
+ * disjoint. Caller keeps logits alive and immutable for the entire call.
+ * No allocation, mutation of logits, or retained pointers; reentrant. */
+int lunelette_select_greedy(const float *logits, int64_t *token,
+    char *error, size_t capacity);
+
 /* Supply the full prefix to the callback for each new token. Prompt length 1..256; all IDs
  * validated even for zero budget. Prompt EOS is not a stop condition. Never
  * returns more than 256 total tokens (prompt + new); a full prompt needs no call.

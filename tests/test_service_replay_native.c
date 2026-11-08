@@ -1,7 +1,10 @@
 /* Model-free runtime stubs; optional existing Tekken tokenizer, never model weights. */
+#define _DARWIN_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
 #include "support/native_runtime.h"
 #include "../service/native.c"
+#include <limits.h>
+#include <errno.h>
 
 static uint32_t read_u32(FILE *file)
 {
@@ -93,8 +96,15 @@ static void policy_replay(const char *tokenizer, unsigned policy)
     g.reset(g.context);
     CHECK(n->replay_index == 3);
     CHECK(g.materialize(g.context, ids, 4));
-    logits[131071] = NAN;
-    CHECK(g.replay_next(g.context, 53156) == -1 && n->replay_index == 3);
+    unsigned emitted_before = n->emitted;
+    long capture_before = ftell(n->replay_file);
+    float nonfinite[] = {NAN, INFINITY, -INFINITY};
+    for (unsigned i = 0; i < 3; i++) {
+        logits[131071] = nonfinite[i];
+        CHECK(g.replay_next(g.context, 53156) == -1 && n->replay_index == 3);
+        CHECK(!n->pending && n->emitted == emitted_before && !n->replay_failed);
+        CHECK(ftell(n->replay_file) == capture_before);
+    }
     g.reset(g.context);
     for (unsigned i = 3; i < 16; i++) {
         CHECK(g.materialize(g.context, ids, 4));
@@ -117,9 +127,142 @@ static void policy_replay(const char *tokenizer, unsigned policy)
     CHECK(!unlink(path));
 }
 
+/* Frozen pre-P5 semantic adapter: full-prefix validation and one-token
+ * generation, with an independent strict-greater finite scan as oracle. */
+static int baseline_select(const native_service *n)
+{
+    if (n->pending || !n->length || n->length > n->capacity ||
+        (n->capacity != 256 && n->capacity != 4352)) {
+        return -1;
+    }
+    for (unsigned i = 0; i < n->length; i++) {
+        if (n->prefix[i] >= 131072) {
+            return -1;
+        }
+    }
+    if (n->length == n->capacity || !n->logits) {
+        return -1;
+    }
+    unsigned best = 0;
+    for (unsigned i = 0; i < 131072; i++) {
+        if (!isfinite(n->logits[i])) {
+            return -1;
+        }
+        if (n->logits[i] > n->logits[best]) {
+            best = i;
+        }
+    }
+    return (int)best;
+}
+
+typedef struct {
+    size_t bytes, limit;
+} failing_capture;
+
+static int fail_write(void *context, const char *bytes, int count)
+{
+    failing_capture *sink = context;
+    (void)bytes;
+    if ((size_t)count > sink->limit - sink->bytes) {
+        errno = EIO;
+        return -1;
+    }
+    sink->bytes += (size_t)count;
+    return count;
+}
+
+static void capture_failures(void)
+{
+    native_service *n = calloc(1, sizeof(*n));
+    CHECK(n);
+    n->capacity = 256;
+    n->length = 1;
+    n->logits = logits;
+    memset(logits, 0, sizeof(logits));
+    logits[42] = 1;
+    char *buffer = malloc(1024 * 1024);
+    CHECK(buffer);
+    for (unsigned mode = 0; mode < 2; mode++) {
+        failing_capture sink = {0, mode ? 0 : 32};
+        n->replay_file = funopen(&sink, NULL, fail_write, NULL, NULL);
+        CHECK(n->replay_file);
+        if (!mode) {
+            CHECK(!setvbuf(n->replay_file, NULL, _IONBF, 0));
+        } else {
+            CHECK(!setvbuf(n->replay_file, buffer, _IOFBF, 1024 * 1024));
+        }
+        n->replay_failed = 0;
+        n->replay_index = 3;
+        n->emitted = 77;
+        CHECK(native_replay_next(n, 1000) == -1);
+        CHECK(n->replay_failed && n->replay_index == 3 && !n->pending && n->emitted == 77);
+        CHECK(mode || sink.bytes > 0); /* A partial record is retained. */
+        CHECK(native_replay_next(n, 1000) == -1 && n->replay_index == 3);
+        fclose(n->replay_file); /* Deliberately failed stream. */
+    }
+    free(buffer);
+    free(n);
+}
+
+static void selection_contract(void)
+{
+    native_service *n = calloc(1, sizeof(*n));
+    CHECK(n);
+    n->capacity = 256;
+    n->length = 1;
+    n->logits = logits;
+    for (unsigned step = 0; step < 20; step++) {
+        for (unsigned i = 0; i < 131072; i++) {
+            logits[i] = -10;
+        }
+        unsigned winner = step == 19 ? 2 : 1000 + step;
+        logits[winner] = step % 2 ? -0.0f : -1.0f;
+        logits[winner + 1] = step % 2 ? 0.0f : -1.0f;
+        int expected = baseline_select(n);
+        CHECK(native_next(n) == expected && expected == (int)winner);
+        CHECK(n->pending && n->emitted == winner);
+        CHECK(native_next(n) == -1);
+        n->prefix[n->length++] = n->emitted; /* Synthetic materialize. */
+        n->pending = 0;
+    }
+    for (unsigned cap = 256; cap <= 4352; cap += 4096) {
+        n->capacity = cap;
+        unsigned lengths[] = {0, cap, cap + 1, UINT_MAX};
+        for (unsigned i = 0; i < 4; i++) {
+            n->length = lengths[i];
+            CHECK(native_next(n) == -1 && !n->pending && n->emitted == 2);
+        }
+        n->length = cap - 1;
+        int expected = baseline_select(n);
+        CHECK(native_next(n) == expected);
+        n->pending = 0;
+        n->prefix[cap - 2] = 131072;
+        CHECK(native_next(n) == -1 && !n->pending);
+        n->prefix[cap - 2] = 0;
+    }
+    n->length = 1;
+    n->capacity = UINT_MAX;
+    CHECK(native_next(n) == -1);
+    n->capacity = 256;
+    n->prefix[0] = UINT_MAX;
+    CHECK(native_next(n) == -1);
+    n->prefix[0] = 0;
+    n->logits = NULL;
+    CHECK(native_next(n) == -1);
+    n->logits = logits;
+    float bad[] = {NAN, INFINITY, -INFINITY};
+    for (unsigned i = 0; i < 3; i++) {
+        logits[131071] = bad[i];
+        CHECK(native_next(n) == -1 && !n->pending && n->emitted == 2);
+    }
+    free(n);
+}
+
 int main(int argc, char **argv)
 {
     CHECK(argc == 2);
+    selection_contract();
+    capture_failures();
     CHECK(sizeof(service_session) + sizeof(native_service) < 8u * 1024 * 1024);
     policy_replay(argv[1], 1);
     policy_replay(argv[1], 2);
