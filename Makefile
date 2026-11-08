@@ -114,7 +114,7 @@ $(BUILD)/embed_shader: tools/embed_shader.c include/model_facts.h | $(BUILD)
 	$(CC) -std=c11 -O2 -Wall -Wextra -Wpedantic $< -o $@
 
 $(BUILD)/metal_shader.h: src/metal_kernels.metal $(BUILD)/embed_shader
-	./$(BUILD)/embed_shader $< > $@.tmp
+	"$(abspath $(BUILD)/embed_shader)" $< > $@.tmp
 	mv $@.tmp $@
 
 $(BUILD)/metal_%.o: src/metal_%.c $(METAL_HEADERS) | $(BUILD)
@@ -154,7 +154,10 @@ $(BUILD)/lunelette metal-test:
 	@exit 1
 endif
 
-.PHONY: shader-facts-test dependency-test
+.PHONY: shader-facts-test dependency-test build-path-test
+# Optional stdlib tooling regression; host/core tests remain Python-free.
+build-path-test:
+	$(PYTHON) -B tests/test_build_paths.py
 shader-facts-test:
 	CC='$(CC)' python3 tests/test_shader_facts.py
 dependency-test:

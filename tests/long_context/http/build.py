@@ -73,12 +73,12 @@ def build(target):
             raise RuntimeError('HTTP fixed build inventory bound')
         if sum(p.stat().st_size for p in paths) > 64*1024*1024:
             raise RuntimeError('HTTP 64MiB build cap')
-    def run(argv, expected=0):
+    def run(argv, expected=0, *, timeout=180):
         commands.append(argv)
         log.write((json.dumps(argv)+'\n').encode())
         log.flush()
         result = subprocess.run(argv, cwd=ROOT, env=env, stdout=log, stderr=log,
-                                timeout=180, preexec_fn=limits)
+                                timeout=timeout, preexec_fn=limits)
         census()
         if result.returncode != expected:
             raise RuntimeError('HTTP build/refusal command failed: '+str(argv))
@@ -94,13 +94,9 @@ def build(target):
         version = query([cc, '--version'])
         sdk_version = query(['/usr/bin/xcrun', '--sdk', 'macosx', '--show-sdk-version'])
         developer_directory = query(['/usr/bin/xcode-select', '-p'])
-        run([cc, '-std=c11', '-O2', str(ROOT/'tools/embed_shader.c'),
-             '-o', str(target/'embed_shader')])
-        with (target/'metal_shader.h').open('xb') as stream:
-            shader_command = [str(target/'embed_shader'), str(ROOT/'src/metal_kernels.metal')]
-            commands.append(shader_command)
-            subprocess.run(shader_command, env=env, stdout=stream, check=True,
-                           timeout=30, preexec_fn=limits)
+        make_shader = ['/usr/bin/make', 'BUILD='+str(target), 'CC='+cc]
+        run([*make_shader, str(target/'embed_shader')])
+        run([*make_shader, str(target/'metal_shader.h')], timeout=30)
         objects = [target/(name+'.o') for name in
                    ('metal_weights', 'metal_yarn', 'metal_runtime', 'metal_encode', 'metal_mps')]
         run(['/usr/bin/make', 'BUILD='+str(target), 'CC='+cc,

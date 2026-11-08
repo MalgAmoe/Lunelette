@@ -68,22 +68,17 @@ def build(out):
     with log.open('a') as stream:
         stream.write(json.dumps(dict(compiler=compiler, environment=env), sort_keys=True)+'\n')
     commands = []
-    def run(cmd):
+    def run(cmd, *, timeout=180):
         commands.append(cmd)
         with log.open('a') as stream:
             stream.write(shlex.join(cmd)+'\n')
             stream.flush()
             subprocess.run(cmd, cwd=ROOT, env=env, stdout=stream,
-                           stderr=subprocess.STDOUT, check=True, timeout=180)
+                           stderr=subprocess.STDOUT, check=True, timeout=timeout)
     objects = [out/(n+'.o') for n in ('metal_weights','metal_yarn','metal_runtime','metal_encode','metal_mps')]
-    # Make's shader recipe prefixes ./ and cannot execute an absolute BUILD path.
-    run([cc,'-std=c11','-O2',str(ROOT/'tools/embed_shader.c'),'-o',str(out/'embed_shader')])
-    with (out/'metal_shader.h').open('xb') as stream:
-        cmd = [str(out/'embed_shader'),str(ROOT/'src/metal_kernels.metal')]
-        commands.append(cmd)
-        subprocess.run(cmd, env=env, stdout=stream, check=True, timeout=30)
-        with log.open('a') as log_stream:
-            log_stream.write(shlex.join(cmd)+' > metal_shader.h\n')
+    make_shader = ['/usr/bin/make', 'BUILD='+str(out), 'CC='+cc]
+    run([*make_shader, str(out/'embed_shader')])
+    run([*make_shader, str(out/'metal_shader.h')], timeout=30)
     run(['/usr/bin/make', 'BUILD='+str(out), 'CC='+cc,
          'CFLAGS=-std=c11 -O2 -Wall -Wextra -Wpedantic', 'CPPFLAGS=-Iinclude',
          'LDFLAGS=', 'METAL_FLAGS=-fobjc-arc -fno-objc-exceptions -ffp-contract=off -mmacosx-version-min=15.0',
