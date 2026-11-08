@@ -20,8 +20,8 @@ MPS uses Float32 storage, tight row strides, transposed right operand, alpha 1 a
 
 | Storage option | Multi-token block projections | Single-token block projections |
 |---|---|---|
-| `resident-fp32` (C/CLI default) | Resident FP32 weights → MPS or custom | Precise custom FP32 |
-| `compact-fp8-arithmetic` | Packed weights → reusable FP32 stage → MPS or custom | Arithmetic FP8 reconstruction during projection |
+| `resident-fp32` (explicit supported option) | Resident FP32 weights → MPS or custom | Precise custom FP32 |
+| `compact-fp8-arithmetic` (C/CLI default) | Packed weights → reusable FP32 stage → MPS or custom | Arithmetic FP8 reconstruction during projection |
 | `compact-fp8-lookup` | Same conversion/stage path as arithmetic | Unscaled constant lookup then FP32 scaling |
 
 Select CLI storage with `--metal-strategy`; the server uses required `--strategy`. Prefill policy is independent: `--metal-prefill mps|custom` for CLI, required `--prefill mps|custom` for server, or `lunelette_metal_options` for C. Multi-token MPS is the default in C/CLI options. Single-token prefill/decode and the tied head use custom kernels. Lookup changes only single-token block decoding, not the head.
@@ -70,7 +70,7 @@ Availability is a heuristic `(free_count + inactive_count) × page_size`, with c
 
 | Operation | Contract |
 |---|---|
-| `create`, `create_with_options` | Default C256/B256; NULL options select resident/MPS |
+| `create`, `create_with_options` | Default C256/B256; NULL options select compact arithmetic/MPS |
 | `create_configured` | Explicit supported limits above; NULL limits select 256/256 |
 | `get_limits`, `get_memory` | Nonmutating queries; invalid arguments leave output unchanged |
 | `prefill` | Empty valid sequence; 1..B valid IDs |
@@ -80,6 +80,8 @@ Availability is a heuristic `(free_count + inactive_count) × page_size`, with c
 | `destroy` | Release context; NULL permitted; destroy all handles first |
 
 Successful model calls return borrowed 131072-element FP32 logits, valid until the next **mutating** context call or destroy. Memory/limits queries and checkpoint create/destroy do not invalidate that borrow. Calls returning logits set the output pointer NULL on failure. Invalid arguments reject before GPU/cache mutation; execution/allocation/nonfinite failures invalidate the sequence and checkpoint. No partial prefix is published as valid. All logits must be finite before length and endpoint publication.
+
+The storage-only default migration applies to `create()`, NULL options and `LUNELETTE_METAL_OPTIONS_DEFAULT`. Enum identities are unchanged: `{0}` and partial initializers omitting strategy still select resident FP32; omitted prefill still means MPS. Zero initialization is not the default-options macro. Explicit resident/arithmetic/lookup are honored; invalid enums fail before checkpoint I/O. No admission fallback or retry is introduced.
 
 ### Checkpoint handles
 

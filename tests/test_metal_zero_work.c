@@ -18,7 +18,7 @@ static int64_t prompt_id = 42;
 static int metadata_fails;
 static size_t opens, closes, creates, callbacks, decodes;
 static int tokenizer_marker;
-static lunelette_metal_strategy expected_strategy;
+static lunelette_metal_strategy expected_strategy = LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC;
 
 int lunelette_tokenizer_open(const char *path, lunelette_tokenizer **out,
     char *error, size_t capacity)
@@ -197,6 +197,11 @@ int main(void)
     CHECK(creates == 1 && opens == 0);
     selected[argc + 1] = "compact-fp8-lookup";
     expected_strategy = LUNELETTE_METAL_COMPACT_FP8_LOOKUP;
+    creates = opens = 0;
+    CHECK(lunelette_cli_main(argc + 2, selected) == 1);
+    CHECK(creates == 1 && opens == 0);
+    selected[argc + 1] = "resident-fp32";
+    expected_strategy = LUNELETTE_METAL_RESIDENT_FP32;
     creates = opens = 0;
     CHECK(lunelette_cli_main(argc + 2, selected) == 1);
     CHECK(creates == 1 && opens == 0);

@@ -731,7 +731,7 @@ def main():
     parser.add_argument("--native-tokenizer")
     parser.add_argument("--native-prefill", choices=["mps", "custom"], default="mps")
     parser.add_argument("--native-strategy", choices=["resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"],
-                        help="native storage strategy (default: resident-fp32); requires model/tokenizer")
+                        help="native storage strategy (default: compact-fp8-arithmetic); requires model/tokenizer")
     parser.add_argument("--request-seconds", type=float, default=120)
     parser.add_argument("--native-context", type=int, choices=[256, 4352], default=256)
     parser.add_argument("--native-chunk", type=int, choices=[128, 256], default=256)
@@ -745,7 +745,7 @@ def main():
             if not args.native_model or not args.native_tokenizer:
                 raise ValueError("native model and tokenizer both required")
             native_args = ["--model", args.native_model, "--tokenizer", args.native_tokenizer,
-                           "--strategy", args.native_strategy or "resident-fp32", "--context", str(args.native_context), "--prefill-chunk", str(args.native_chunk),
+                           "--strategy", args.native_strategy or "compact-fp8-arithmetic", "--context", str(args.native_context), "--prefill-chunk", str(args.native_chunk),
                            "--prefill", args.native_prefill]
         policy = scenario.get("prefix_reuse", args.native_prefix_reuse or "legacy")
         if args.native_prefix_reuse is not None and (native_args is None or args.native_prefix_reuse != policy):
@@ -768,7 +768,7 @@ def main():
         else:
             service = Service(args.server, args.output, native_args=native_args,
                               request_seconds=args.request_seconds,
-                              expected_strategy=args.native_strategy or "resident-fp32",
+                              expected_strategy=args.native_strategy or "compact-fp8-arithmetic",
                               evaluation_mode=scenario["mode"])
     except Exception as error:
         print(f"real-workload: {error}", file=sys.stderr)

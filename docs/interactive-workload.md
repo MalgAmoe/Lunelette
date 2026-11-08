@@ -8,7 +8,7 @@ python3 tools/interactive_workload.py --server build/lunelette-server \
   --output evidence/interactive-001 --seconds 300 --total-budget 1024
 ```
 
-Use your actual service executable and checkpoint/tokenizer paths. Native defaults remain resident-fp32, mps prefill, context 256/chunk 256, legacy prefix reuse. Optional `--native-strategy`, `--native-prefill`, `--native-prefix-reuse` select existing profiles. Checkpoint/restore require an on/off prefix profile and advertised checkpoint support. `--native-context 4352` enables long history (32768 message bytes); `--native-chunk 128|256` selects the existing chunk profile (128 requires 4352). The adapter checks /info context, chunk, prefix, prefill and tools profile before ready. Replay, scoring and tuning interfaces are not exposed.
+Use your actual service executable and checkpoint/tokenizer paths. Native defaults are compact-fp8-arithmetic, mps prefill, context 256/chunk 256, legacy prefix reuse. Use `--native-strategy resident-fp32` for previous storage behavior; lookup remains supported explicitly. Optional `--native-strategy`, `--native-prefill`, `--native-prefix-reuse` select existing profiles. Checkpoint/restore require an on/off prefix profile and advertised checkpoint support. `--native-context 4352` enables long history (32768 message bytes); `--native-chunk 128|256` selects the existing chunk profile (128 requires 4352). The adapter checks /info context, chunk, prefix, prefill and tools profile before ready. Replay, scoring and tuning interfaces are not exposed.
 
 For model-free protocol testing only:
 

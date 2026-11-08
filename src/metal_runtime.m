@@ -1,4 +1,5 @@
 #include "metal_internal.h"
+#include "metal_options.h"
 #include "metal_shader.h"
 #include <mach/mach.h>
 #include <errno.h>
@@ -210,18 +211,12 @@ lunelette_metal *lunelette_metal_create_configured(const char *path,
         snprintf(error, capacity, "Metal unsupported context/block profile");
         return NULL;
     }
-    lunelette_metal_prefill_mode mode = options ? options->prefill : LUNELETTE_METAL_PREFILL_MPS;
-    if (mode != LUNELETTE_METAL_PREFILL_MPS && mode != LUNELETTE_METAL_PREFILL_CUSTOM) {
-        snprintf(error, capacity, "Metal invalid prefill option; select MPS or CUSTOM");
+    lunelette_metal_options selected;
+    if (metal_options_resolve(options, &selected, error, capacity)) {
         return NULL;
     }
-    lunelette_metal_strategy strategy = options ? options->strategy : LUNELETTE_METAL_RESIDENT_FP32;
-    if (strategy != LUNELETTE_METAL_RESIDENT_FP32 &&
-        strategy != LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC &&
-        strategy != LUNELETTE_METAL_COMPACT_FP8_LOOKUP) {
-        snprintf(error, capacity, "Metal invalid strategy; select resident-fp32, compact-fp8-arithmetic or compact-fp8-lookup");
-        return NULL;
-    }
+    lunelette_metal_prefill_mode mode = selected.prefill;
+    lunelette_metal_strategy strategy = selected.strategy;
     @autoreleasepool {
         lunelette_metal_weights staged;
         if (lunelette_metal_weights_open(&staged, path, error, capacity) != 0) {

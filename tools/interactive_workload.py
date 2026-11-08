@@ -287,7 +287,8 @@ def main():
     parser.add_argument("--test-only", action="store_true", help="existing no-weight protocol server only")
     parser.add_argument("--native-model")
     parser.add_argument("--native-tokenizer")
-    parser.add_argument("--native-strategy", default="resident-fp32", choices=["resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"])
+    parser.add_argument("--native-strategy", default="compact-fp8-arithmetic", choices=["resident-fp32", "compact-fp8-arithmetic", "compact-fp8-lookup"],
+                        help="native storage strategy (default: compact-fp8-arithmetic)")
     parser.add_argument("--native-prefill", default="mps", choices=["mps", "custom"])
     parser.add_argument("--native-prefix-reuse", default="legacy", choices=["legacy", "on", "off"])
     parser.add_argument("--native-context", type=int, default=256, choices=[256, 4352])

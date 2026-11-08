@@ -288,7 +288,7 @@ int main(void)
             }
         }
         lunelette_metal_options options = LUNELETTE_METAL_OPTIONS_DEFAULT;
-        CHECK(options.strategy == LUNELETTE_METAL_RESIDENT_FP32);
+        CHECK(options.strategy == LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC);
         options.strategy = (lunelette_metal_strategy)3;
         CHECK(!lunelette_metal_create_with_options("must-not-open", &options, error, sizeof error));
         CHECK(strstr(error, "invalid strategy"));

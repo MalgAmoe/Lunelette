@@ -36,7 +36,7 @@ This example is an invocation recipe, not a guaranteed answer. The adapter owns 
 
 For the measured document/history workload, use **compact arithmetic + MPS + context 4352/chunk 256 + reuse ON**, as above. This is a memory-conscious recommendation from a bounded [workload panel](docs/useful-workload-panel.md), not a universal speed or correctness claim.
 
-Client defaults remain **resident FP32, MPS, context 256/chunk 256, legacy reuse**. C constructors likewise default to resident/MPS and 256/256. A direct native-server launch requires explicit strategy and prefill flags; see the [service contract](docs/service.md). Lookup decoding, custom prefill and resident FP32 remain supported alternatives; lookup was not a consistent whole-workload winner. No failed optimization candidate has been integrated. The [status report](docs/real-workload-status.md) preserves the research outcomes separately from operational delivery.
+Client defaults are **compact arithmetic, MPS, context 256/chunk 256, legacy reuse**. C default constructors likewise select compact arithmetic/MPS and 256/256. This intentional storage-only compatibility change replaces resident FP32 on omission; use `--metal-strategy resident-fp32` for the CLI or `--native-strategy resident-fp32` for Python clients to retain previous storage behavior. A direct native-server launch requires explicit strategy and prefill flags; see the [service contract](docs/service.md). Lookup decoding, custom prefill and resident FP32 remain supported alternatives; lookup was not a consistent whole-workload winner. No failed optimization candidate has been integrated. The [status report](docs/real-workload-status.md) preserves the research outcomes separately from operational delivery.
 
 ## Interfaces and limits
 

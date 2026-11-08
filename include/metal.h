@@ -32,9 +32,14 @@ typedef struct {
     lunelette_metal_strategy strategy;
 } lunelette_metal_options;
 
-#define LUNELETTE_METAL_OPTIONS_DEFAULT { LUNELETTE_METAL_PREFILL_MPS, LUNELETTE_METAL_RESIDENT_FP32 }
+#define LUNELETTE_METAL_OPTIONS_DEFAULT \
+    { LUNELETTE_METAL_PREFILL_MPS, LUNELETTE_METAL_COMPACT_FP8_ARITHMETIC }
 
-/* NULL options selects defaults. Invalid enum values fail before opening the checkpoint.
+/* NULL options selects compact arithmetic/MPS defaults.
+ * Zero initialization (including an omitted strategy field) still selects resident FP32;
+ * an omitted prefill field still selects MPS. Use the macro for product defaults.
+ * Explicit resident and lookup remain supported, without automatic fallback.
+ * Invalid enum values fail before opening the checkpoint.
  * create() is equivalent to create_with_options(..., NULL, ...).
  * MPS is the default for multi-token block projections; decode/head stay precise.
  * MPS uses FP32 storage, but internal accumulation precision is unspecified.

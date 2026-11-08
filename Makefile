@@ -101,7 +101,7 @@ ifeq ($(shell uname -s),Darwin)
 METAL_C_SOURCES = src/metal_weights.c src/metal_yarn.c
 METAL_OBJC_SOURCES = src/metal_runtime.m src/metal_encode.m src/metal_mps.m
 METAL_OBJECTS = $(patsubst src/%.c,$(BUILD)/%.o,$(METAL_C_SOURCES)) $(patsubst src/%.m,$(BUILD)/%.o,$(METAL_OBJC_SOURCES))
-METAL_HEADERS = src/metal_plan.h src/metal_memory_guard.h include/safetensors.h include/metal.h src/metal_internal.h src/metal_mps.h src/metal_weights.h $(MODEL_HEADERS)
+METAL_HEADERS = src/metal_options.h src/metal_plan.h src/metal_memory_guard.h include/safetensors.h include/metal.h src/metal_internal.h src/metal_mps.h src/metal_weights.h $(MODEL_HEADERS)
 METAL_TARGET = -mmacosx-version-min=15.0
 METAL_LIBS = -framework Foundation -framework Metal -framework MetalPerformanceShaders
 METAL_FLAGS = -fobjc-arc -fno-objc-exceptions -ffp-contract=off -mmacosx-version-min=15.0
@@ -363,3 +363,11 @@ service-observation-tokenizer-test: $(BUILD)/test_service_observation_framing $(
 	@test -n "$(TOKENIZER)" || { echo 'TOKENIZER path required (no downloads)'; exit 1; }
 	$(SERVICE_TOOLS_PYTHON) tests/test_service_observation_fixture.py ./$(BUILD)/test_service_observation_framing "$(TOKENIZER)"
 	$(SERVICE_TOOLS_PYTHON) tests/test_service_observation_http.py ./$(BUILD)/test_service_observation_http "$(TOKENIZER)"
+
+# Constructor option admission is host-only, with no Python/model/GPU prerequisites.
+$(BUILD)/test_metal_options: tests/test_metal_options.c src/metal_options.h include/metal.h | $(BUILD)
+	$(CC) $(CPPFLAGS) -Isrc $(CFLAGS) $(LDFLAGS) $< -o $@ $(LDLIBS)
+core-test: metal-options-test
+.PHONY: metal-options-test
+metal-options-test: $(BUILD)/test_metal_options
+	./$(BUILD)/test_metal_options
