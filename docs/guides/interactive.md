@@ -1,4 +1,4 @@
-# Bounded interactive workload adapter
+# Interactive client
 
 `tools/interactive_workload.py` is a persistent diagnostic NDJSON client of the existing service, not a new inference engine or a quality/numerical acceptance check. It starts and owns exactly one child, retains one session across turns, and never retries a command. No shell, arbitrary tool execution, downloads or Python model are involved.
 
@@ -53,6 +53,8 @@ Quit acknowledges the quit command, not generation success. Quit/EOF latch activ
 
 ## Restricted native tools
 
+See [fixed profiles, prompts and schemas](../reference/tools.md) for the complete tool input and corpus contracts.
+
 Launch with `--tools calculator`, `investigation`, or `observation` (native only), then use `op:tools` with that same `profile`. These call the existing `native_workload_tools.run_loop` and its capability, ledger, argument and corpus checks. Only bounded integer calculator operations and lookups in hash-checked bundled fixture corpora are possible. No paths, commands, network requests, dynamic code, arbitrary document queries, or user-defined tools are accepted.
 
 The existing handler limits apply: budget ≤128, calls ≤2 (observation ≤1), total loop generation ≤384 (observation ≤256), bounded wall time, and fixed scoring answers: calculator `43`, investigation `"19 [LARCH-STOCK:P1]"`, observation `"pump-A 84 ALERT"`. Supply all six tool fields; e.g. calculator budget 64, max_calls 2, max_generated 128, wall_seconds 30, answer 43. These are diagnostic fixtures, not a general assistant tool interface. The input message must have the handler's required native framing. A cancellation flag prevents subsequent tool messages/generations even if cancellation arrives between loop requests. Internal IDs `<command-id>-<call-index>` are reserved persistently; avoid collisions with user command IDs. Tool terminal stats retain the bounded handler report.
@@ -66,25 +68,4 @@ The existing handler limits apply: budget ≤128, calls ≤2 (observation ≤1),
 * The output directory must not exist. Service creates it exclusively; no append, overwrite, fallback path or recovery from an old evidence root. `config.json` retains launch settings (≤64 KiB); `client.ndjson` retains concurrent request, arrival, command and failure evidence (≤8 MiB); `server.stderr` retains merged child stdout/stderr (≤8 MiB). Evidence is never automatically deleted. Limit exhaustion is fatal; logs can be incomplete and shutdown records can be absent when the log cap is reached. Protect evidence: messages/config paths are not redacted. There are no token-vector captures or additional log files.
 * EOF, quit, SIGINT, SIGTERM, deadline and transport failure terminate the owned child, then kill it if necessary. Cleanup has bounded grace beyond the lifetime (child wait up to 3 seconds then kill wait up to 3 seconds, reader joins). No unrelated processes/resources are touched. SIGKILL cannot provide cleanup.
 
-Model-free tests cover schema and byte/count/budget bounds, persistent IDs, competing mutations, live inspect/cancel, streamed text, EOF during generation, idle deadline, signal handling, broken/slow output refusal and exclusive evidence roots under normal and optimized Python. Native tool execution, actual model latency/quality and GPU cleanup require separate explicitly authorized validation.
-
-## Bounded native verification
-
-One source-pinned adapter snapshot used the retained clean `d88541d` engine binary with compact arithmetic/MPS, context 4352/chunk 256 and prefix reuse ON. Engine source was unchanged; defaults were not promoted. Adapter snapshot SHA256: `ba7887593563917e26d8e536f0ff0aeb47c126f644061a328712d9b0bbdcebe7`. A subsequent control-admission recovery guard has model-free verification, not an additional model run. Current model-free coverage: 27 interactive tests normally and under optimized Python; 96 workload tests (seven socket skips covered by direct runs), plus actual CPU-stub control rejection/save/restore checks. Main also ran core, scenario and replay regression targets.
-
-The agent chose follow-ups after observing answers and metrics, recording each criterion before generation. One load, 20 commands, 320 reserved generated tokens, 113 actually generated, 268.674 s through shutdown including agent idle time:
-
-| Request | Generated tokens | Outcome |
-|---|---:|---|
-| Initial recorded-log extraction |24|Correct latest recovered 76 and peak 84 |
-| Adaptive five-event/two-pump summary |85|Facts correct; **failed** required three-bullet format by producing four |
-| New triage question |4|Exact `pump-B`, passed |
-| Intentional cancellation probe |0|Cancelled; no task-quality score |
-
-All three scored generations reached EOS/ready without extension. The second message followed a 31.147 s pause. Factual judgments were manual against prospective criteria; exact label and bullet count were checked mechanically. No repaired rerun, broad accuracy claim or comparative performance claim follows.
-
-The cancellation probe was inspected while generating, explicitly cancelled, and ended in `needs_reset` (312.403 ms cancellation latency). Reset was required and invalidated the earlier checkpoint. A new 12-token prefix was saved/restored, inspected and reset: same-prefix restore, not divergent-history restore in this session. Zero generated tokens did not mean zero work: the cancelled suffix executed 27 model tokens. Total executed model tokens, including controls, were 339.
-
-Independent offline checks reconstructed official message frames and decoded outputs from authoritative IDs; reconciled stream/retained text, complete ledgers, state and work; and rejected deliberately corrupted text/ledger evidence. Adapter and owned server exited 0; a process scan found no owned server remaining. This is process cleanup evidence, not independent GPU-driver leak instrumentation.
-
-Native tool mode was not enabled in this adapter session. Its new adapter path has model-free coverage and historical underlying-handler evidence, not a new live integration claim. Named memory was 5,899,678,720 bytes; maximum observed footprint sample 6,038,884,384 bytes is **not a peak**. Independent numerical validation remains FAIL/open; no new reference comparison was performed. Operational diagnostic scope is delivered, not an independently validated baseline.
+Model-free coverage is described in [testing](../development/testing.md). Tests cover schema and byte/count/budget bounds, persistent IDs, competing mutations, live inspect/cancel, streamed text, EOF during generation, idle deadline, signal handling, broken/slow output refusal and exclusive evidence roots under normal and optimized Python. Native tool execution, actual model latency/quality and GPU cleanup require separate explicitly authorized validation.

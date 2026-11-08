@@ -42,6 +42,7 @@ static void policy_test(char **arguments, unsigned policy)
     CHECK(service_native_open(17, args, &g, &port));
     CHECK(g.prefix_reuse == policy);
     CHECK(strstr(g.info, "\"prefix_reuse_validation\":\"external_evidence_only\""));
+    CHECK(strstr(g.info, "\"checkpoint_validation_document\":\"docs/limitations.md#checkpoint-evidence\""));
     CHECK(strstr(g.info, "published source-bound evidence; no runtime attestation"));
     CHECK(strstr(g.info, "\"numerical_comparison_performed_at_startup\":false"));
     CHECK(!strstr(g.info, "NOT_RUN"));
@@ -163,6 +164,9 @@ int main(int argc, char **argv)
     CHECK(service_native_open(15, arguments, &generator, &port));
     CHECK(creates == 1 && port == 0);
     CHECK(strstr(generator.info, "\"model_load_count\":1"));
+    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/limitations.md#independent-numerical-evidence\""));
+    CHECK(strstr(generator.info, "\"long_context_validation_document\":\"docs/limitations.md#long-context-evidence\""));
+    CHECK(strstr(generator.info, "\"checkpoint_validation_document\":\"docs/limitations.md#checkpoint-evidence\""));
     unsigned ids[256], count = 256;
     CHECK(generator.frame(generator.context, (const unsigned char *)"Hi", 2, 1, ids, &count));
     CHECK(count == 4 && ids[0] == 1 && ids[2] == 37133);
@@ -233,7 +237,7 @@ int main(int argc, char **argv)
     CHECK(strstr(generator.info, "\"named_buffer_total_bytes\":4893045760"));
     CHECK(strstr(generator.info, "\"compact_model_validation\":\"external_evidence_only\""));
     CHECK(strstr(generator.info, "\"numerical_comparison_performed_at_startup\":false"));
-    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/real-workload-m4.md\""));
+    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/limitations.md#compact-arithmetic-evidence\""));
     CHECK(strstr(generator.info, "no runtime attestation"));
     CHECK(!strstr(generator.info, "NOT_RUN"));
     CHECK(strstr(generator.info, "FP8-convert-stage-then-precise-FP32"));
@@ -264,7 +268,7 @@ int main(int argc, char **argv)
     CHECK(service_native_open(15, arguments, &generator, &port));
     CHECK(strstr(generator.info, "\"execution_strategy\":\"compact-fp8-lookup\""));
     CHECK(strstr(generator.info, "compact-FP8-lookup"));
-    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/fp8-lookup.md\""));
+    CHECK(strstr(generator.info, "\"published_validation_document\":\"docs/limitations.md#compact-lookup-evidence\""));
     CHECK(strstr(generator.info, "\"named_conversion_stage_bytes\":113246208"));
     generator.destroy(generator.context);
     policy_test(arguments, 1);

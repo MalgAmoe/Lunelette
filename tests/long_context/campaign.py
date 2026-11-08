@@ -6,7 +6,7 @@ def compose(root, build_root, model, tokenizer, sources, pin):
     def writer(name, maximum, required=True, pipe=False):
         return dict(name=name,max_bytes=maximum,required=required,
                     writer='supervisor-pipe' if pipe else 'reviewed-direct',
-                    contract='original bounded stream writer' if pipe else 'reviewed probe exact exclusive writer / suite bounded callback; see README.md')
+                    contract='original bounded stream writer' if pipe else 'reviewed probe exact exclusive writer / suite bounded callback; see docs/development/long-context.md')
     jobs=[]
     cells=[('short-compact-on','short',256,'compact','on','normal'),
            ('short-resident-on','short',256,'resident','on','normal'),

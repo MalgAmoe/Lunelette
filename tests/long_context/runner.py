@@ -39,7 +39,7 @@ def helpers():
     return load('suite_long_check', HERE / 'long/check.py')
 
 
-# service/session.c metrics_json; docs/real-workload-m2.md measurement definitions.
+# service/session.c metrics_json; docs/reference/service.md metric dictionary and timing boundaries.
 MS_KEYS = frozenset(('framing_ms', 'prefill_ms', 'decode_ms', 'first_token_ms',
                      'total_ms', 'cancel_latency_ms', 'cancel_received_monotonic_ms',
                      'materialize_ms', 'snapshot_ms', 'restore_ms'))

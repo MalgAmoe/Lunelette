@@ -37,7 +37,7 @@ def sources():
     names = json.loads((HELPERS/'engine-sources.json').read_text())
     paths = {ROOT/name for name in names}
     paths.update(p for p in HELPERS.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
-    paths.update((ROOT/'tools/long_context.py', ROOT/'docs/long-context-testing.md'))
+    paths.update((ROOT/'tools/long_context.py', ROOT/'docs/development/long-context.md'))
     return [pin(p) for p in sorted(paths)]
 
 

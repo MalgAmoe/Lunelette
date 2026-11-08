@@ -1,5 +1,5 @@
-YaRN formulas in src/attention.c and src/metal_yarn.c
-and model math in src/metal_kernels.metal are adapted from Hugging Face Transformers
+YaRN formulas in src/metal_yarn.c (and the historical, now-retired
+src/attention.c) and model math in src/metal_kernels.metal are adapted from Hugging Face Transformers
 v5.0.0 (08810b1e278938278c50153ee1edfd7a20a759da), modeling_rope_utils.py.
 Copyright 2024 The HuggingFace Team. All rights reserved.
 Apache License 2.0 (LICENSES/Apache-2.0.txt).
@@ -10,4 +10,4 @@ https://github.com/huggingface/transformers/blob/v5.0.0/src/transformers/modelin
 Unicode property tables in src/tokenizer_unicode.h were generated from regex
 2026.9.29 (Unicode 18.0.0). Source-package notices are retained in
 src/tokenizer_unicode_LICENSE.txt; generator and provenance are documented in
-tests/tokenizer_generate_unicode.py and tests/tokenizer_notes.md.
+tests/tokenizer_generate_unicode.py and docs/reference/tokenizer.md.

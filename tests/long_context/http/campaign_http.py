@@ -14,7 +14,7 @@ def compose(root, target, python, weights, tokenizer, port, receipt):
     def writer(name, cap, required=True, pipe=False):
         return dict(name=name, max_bytes=cap, required=required,
                     writer='supervisor-pipe' if pipe else 'reviewed-direct',
-                    contract='bounded exclusive HTTP writer; docs/long-context-http-testing.md')
+                    contract='bounded exclusive HTTP writer; docs/development/long-context.md')
     interpreter = pin(python.resolve())
     sources = receipt['sources'] + receipt['products'] + [pin(target/'receipt.json')]
     # Preserve venv identity without asking the supervisor to admit symlink pins.

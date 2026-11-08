@@ -21,7 +21,7 @@ def sources():
     paths.update(p for p in HERE.parent.rglob('*') if p.is_file() and '__pycache__' not in p.parts)
     paths.update((HERE.parent/'engine-sources.json',
                   ROOT/'tools/long_context_http.py', ROOT/'tools/long_context.py',
-                  ROOT/'docs/long-context-http-testing.md', ROOT/'docs/long-context-testing.md'))
+                  ROOT/'docs/development/long-context.md'))
     paths.update(p for p in (HERE.parent/'supervisor').glob('*.py'))
     return [pin(p) for p in sorted(paths)]
 

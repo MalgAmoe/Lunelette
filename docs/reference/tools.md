@@ -1,6 +1,6 @@
-# Native calculator-v13 service and workload client
+# Fixed native tools
 
-The interface passed model-free checks and **one real native calculator run** (see the bounded result below). This is not general tool-reliability evidence. The previous custom JSON calculator experiment failed; its application-JSON executor and dedicated scenario/tests are retired. Its [historical protocol description](tool-loop-v1.md) and original evidence remain separate and preserved. They are not native-tool evidence.
+Tools execute in the client, never inside the inference engine. These are diagnostic fixtures, not arbitrary execution or general tool-reliability evidence. The retired application-JSON `tool_loop` operation is rejected before startup. See [service](service.md) for protocol/state ownership and [workloads](../guides/workloads.md) for scenario execution.
 
 `tools/scenarios/calculator-v13.json` uses `native_tool_loop`. The runner launches the supplied native server with `--tools calculator-v13` and requires `/info` `tools: true` and `conversation_protocol: "native-calculator-v13"`. Supply the usual explicit `--server`, `--native-model`, `--native-tokenizer`, `--scenario`, and new `--output` directory arguments to `tools/real_workload.py`. This is an opt-in model run, not part of the model-free tests.
 
@@ -42,23 +42,15 @@ Only one call can be outstanding. Generation and user messages are blocked until
 On macOS, with an existing tokenizer and the pinned official Python environment:
 
 ```sh
-make service-tools-tokenizer-test TOKENIZER=/path/to/tekken.json \
-  SERVICE_TOOLS_PYTHON=/path/to/python
+make service-tools-tokenizer-test TOKENIZER=models/tekken.json \
+  SERVICE_TOOLS_PYTHON=python3
 ```
 
-Core call-parser/state tests are also part of `make test`, requiring no model, Python, or network. Optional tokenizer tests load no model weights.
-
-## Bounded real-model result
-
-One unchanged calculator scenario passed with compact FP8 arithmetic/MPS, context 4352/chunk 256, legacy reuse and native V13 framing. The actual model called `calculator` with `operation: add, a: 19, b: 24`; the client executed it, returned `43`, and the model resumed the same session to answer `43` with natural EOS. There were 172 initial tokens, 25 generated call tokens, four result tokens and three generated final tokens. Official-tokenizer comparison matched the actual initial/call/result transcript exactly; retained ledger and pending counts matched.
-
-The single launch used the existing two-call/128-token-response/384-token-total/ 120-second-loop limits, with no retry or prompt repair. Client and server exited zero. The reviewed binary SHA256 was `d98e15bda1b6b44ac8d1200a1d67b1506c8e046e8f526426a8b31978db990f94`; model SHA256 was `728f1826cd0e38191ca7b1379e81f78cf0555c6ffd95882aabd2404632346f86`.
-
-This establishes one real calculator call/result/GPU-continuation success, not independent numerical correctness, general tool reliability, peak memory or a performance comparison. Historical custom-protocol failure remains a failure.
+Core call-parser/state tests require no model, Python, or network; the enclosing `make test` also executes GPU tests. Optional tokenizer tests load no model weights. `SERVICE_TOOLS_PYTHON=python3` assumes that interpreter already supplies `mistral_common==1.13.1`; otherwise select the existing supplied environment explicitly. Do not install packages implicitly.
 
 ## Frozen lookup investigation
 
-`tools/scenarios/investigation-v13.json` selects `native_investigation_loop` and launches with `--tools investigation-v13`. It requires `/info` `tools: true` and `conversation_protocol: "native-investigation-v13"`. Mixed native profiles are rejected. Calculator-v13's API, default fixture and real-run evidence above are unchanged. One bounded real investigation completed both tools correctly but failed the exact final-output criterion, as recorded below. Use context 4352 for this scenario: its 260-token initial framed input exceeds the default 256 limit.
+`tools/scenarios/investigation-v13.json` selects `native_investigation_loop` and launches with `--tools investigation-v13`. It requires `/info` `tools: true` and `conversation_protocol: "native-investigation-v13"`. Mixed native profiles are rejected. The calculator profile remains separate and unchanged. Use context 4352 for this scenario: its 260-token initial framed input exceeds the default 256 limit.
 
 The same bounded native loop validates authoritative call tokens, retained request metadata and ledgers before execution, and submits `role: tool` with the generation call ID. Lookup accepts exactly `{"document_id":"larch-stock"}` or the cedar identifier. There is no path argument, arbitrary user-file access, remote tool or network lookup. The only collection is `tools/fixtures/stock-documents-v1.json`, version 1, pinned in the client to SHA256 `670215ba689b16ce7fbc3444c67a728682d039b7ad0fd830d917bd876b432258`. It is bounded-read and every record validated once per loop before generation; drift fails closed. Corpus identity is recorded before task execution.
 
@@ -66,27 +58,125 @@ Results use `json.dumps(..., ensure_ascii=False, sort_keys=True, separators=(","
 
 The prompt requests larch-stock, subtraction of dispatched from opening stock, and `<remaining> [<passage_id>]`, without exposing the numbers. Task success requires the exact final `19 [LARCH-STOCK:P1]` and actual lookup of larch followed by actual calculator subtraction of 31 and 12, in that order. A valid cedar lookup, wrong arithmetic, wrong answer, reordered calls, or direct final is a quality failure, not a protocol error. No retry or repair is attempted. Limits remain two calls, 128 output tokens per generation, 384 total, 120 seconds. Reports retain classified failures and generated-work counts, plus local operation durations per call and total (`tool_call_seconds`, `tool_seconds`), excluding HTTP submission. Model-free tests cover the two-call/three-generation path and rejection/quality, deadline, cancellation and corpus-drift cases; these do not establish service, tokenizer, GPU or model correctness.
 
-### Bounded real investigation result
-
-One unchanged run used compact FP8 arithmetic/MPS, context 4352/chunk 256 and legacy reuse. The model called `lookup(larch-stock)`, received the pinned passage, then called `calculator(subtract,31,12)` and received `19`. It returned `19 <LARCH-STOCK:P1>` rather than the required `19 [LARCH-STOCK:P1]`.
-
-Therefore **protocol and tool-sequence success are true; task success is false**. The arithmetic and passage identity are correct, but the frozen exact-format criterion is not relaxed. No retry or prompt repair was performed. There were 260 initial tokens, 14/26/13 generated tokens across three responses, and 44/4 result tokens. Independent official-tokenizer replay matched the actual transcript and retained ledger exactly. Client/server exited zero and the owned process group was gone. This is one tool-assisted integration observation, not general quality, independent numerical correctness or comparative performance evidence.
-
 ## Saved-observation lookup
 
 `tools/scenarios/observation-v13.json` uses `native_observation_loop` and starts `--tools observation-v13` (`native-observation-v13` in `/info`). This reuses the existing `lookup` call, result schema, native V13 framing and session machinery; it is not a separate sensor subsystem. This profile exposes only `lookup({"document_id":"pump-readings"})`. Calculator and stock IDs are rejected in this profile; existing calculator/investigation declarations remain unchanged.
 
-The client reads the bundled `tools/fixtures/observations-v1.json`, version 1, SHA256 `136b7bcb4e89246fa7756854ce7b67264f6f32356faed379999f8098a74d53a0`. It returns passage `PUMP-READINGS:P1` containing explicitly synthetic recorded pump-A84 C / pump-B72 C readings. No live sensor, arbitrary path, network request or user-selectable data file is involved. The prompt does not contain the readings; the model must request them. The same strict result identity/byte/UTF-8 bounds, pending-EOS handling, reset/cancellation and checkpoint restrictions apply.
+The client reads the bundled `tools/fixtures/observations-v1.json`, version 1, SHA256 `136b7bcb4e89246fa7756854ce7b67264f6f32356faed379999f8098a74d53a0`. It returns passage `PUMP-READINGS:P1` containing explicitly synthetic recorded pump-A 84 C / pump-B 72 C readings. No live sensor, arbitrary path, network request or user-selectable data file is involved. The prompt does not contain the readings; the model must request them. The same strict result identity/byte/UTF-8 bounds, pending-EOS handling, reset/cancellation and checkpoint restrictions apply.
 
 The fixed task requires one actual pump-readings lookup followed by exact text `pump-A 84 ALERT`. A direct final without lookup or wrong final text is a task failure even if the protocol is valid. Limits: one executed lookup, 128 generated tokens per response, 256 total, 120-second loop. No retry or prompt repair.
 
 Model-free verification includes frozen official-tokenizer vectors, old-profile compatibility, cross-profile refusals, malformed/stale/bounded results, reset, cancellation and scripted actual service/client continuation. Optional macOS check:
 
 ```sh
-make service-observation-tokenizer-test TOKENIZER=/path/to/tekken.json \
-  SERVICE_TOOLS_PYTHON=/path/to/python
+make service-observation-tokenizer-test TOKENIZER=models/tekken.json \
+  SERVICE_TOOLS_PYTHON=python3
 ```
 
-These scripted checks do not establish real-model task quality. One subsequent unchanged real run used compact FP8 arithmetic/MPS, context 4352/chunk 256 and legacy reuse. The model requested `lookup(pump-readings)`, received the saved record, and answered `Pump-A 84 ALERT`. The expected exact string was `pump-A 84 ALERT`.
 
-**Protocol and tool-loop success passed; strict task success failed solely on the case-sensitive device label.** The temperature and ALERT decision were correct; the scorer was not relaxed. No retry, prompt repair or extra generation occurred. There were 127 initial tokens, 14 generated call tokens, 51 result tokens and 9 final tokens. Official-tokenizer replay matched all actual transcript IDs and the retained ledger exactly. Client/server exited zero and the process group was gone. This is one saved-observation tool integration observation, not live sensor access, broad reliability, independent numerical correctness or comparative performance evidence.
+## Fixed input profiles and corpus contents
+
+The shipped prompts are part of the diagnostic task; changing them changes the task, not just its presentation. All three scenarios create a session, append the following message, run the named loop with the fixed answer, then close. Lower budgets are permitted but cannot authorize retries or extra calls.
+
+### Calculator input
+
+```json
+[
+  {
+    "op": "message",
+    "content": "Use the calculator to compute 19 + 24, then report the answer only."
+  },
+  {
+    "op": "native_tool_loop",
+    "id": "calculator-v13",
+    "budget": 128,
+    "max_calls": 2,
+    "max_generated": 384,
+    "wall_seconds": 120,
+    "answer": 43
+  }
+]
+```
+
+### Investigation input
+
+```json
+[
+  {
+    "op": "message",
+    "content": "Look up larch-stock, use calculator to subtract dispatched from opening stock, and answer '<remaining> [<passage_id>]' only."
+  },
+  {
+    "op": "native_investigation_loop",
+    "id": "investigation-v13",
+    "budget": 128,
+    "max_calls": 2,
+    "max_generated": 384,
+    "wall_seconds": 120,
+    "answer": "19 [LARCH-STOCK:P1]"
+  }
+]
+```
+
+### Observation input
+
+```json
+[
+  {
+    "op": "message",
+    "content": "Use lookup to read pump-readings. Report the hottest device, its integer temperature, and ALERT if temperature is at least 80 else OK. Answer exactly <device> <temperature> <status>."
+  },
+  {
+    "op": "native_observation_loop",
+    "id": "observation-v13",
+    "budget": 128,
+    "max_calls": 1,
+    "max_generated": 256,
+    "wall_seconds": 120,
+    "answer": "pump-A 84 ALERT"
+  }
+]
+```
+
+### Frozen records
+
+These exact record texts are returned, not user-supplied files or live observations:
+
+`tools/fixtures/stock-documents-v1.json`:
+
+```json
+{
+  "version": 1,
+  "documents": [
+    {
+      "document_id": "larch-stock",
+      "passage_id": "LARCH-STOCK:P1",
+      "text": "Opening stock: 31 units. Dispatched: 12 units."
+    },
+    {
+      "document_id": "cedar-stock",
+      "passage_id": "CEDAR-STOCK:P1",
+      "text": "Opening stock: 80 units. Dispatched: 5 units."
+    }
+  ]
+}
+```
+
+`tools/fixtures/observations-v1.json`:
+
+```json
+{
+  "version": 1,
+  "documents": [
+    {
+      "document_id": "pump-readings",
+      "passage_id": "PUMP-READINGS:P1",
+      "text": "Synthetic recorded observation (not live): pump-A temperature 84 C; pump-B temperature 72 C."
+    }
+  ]
+}
+```
+
+Corpus reads are capped at 8192 bytes (an extra byte detects overflow); exact hashes, version 1, exact collection keys/counts and every record are checked before generation. Lookup results serialize with `ensure_ascii=False`, sorted keys and compact separators. Argument objects admit no additional fields; booleans and floats are not integer operands. Loop operation fields are exactly `op`, `id`, `budget`, `max_calls`, `max_generated`, `wall_seconds`, `answer`; IDs are 1–48 ASCII letters/digits/underscore/hyphen. All bounds are positive integers; wall time is 1–120 seconds.
+
+The service validates result schema, identity and bounds, not the truth of arbitrary client-supplied contents. Frozen client corpus checks and independent official-tokenizer fixture checks are distinct safeguards. Incomplete/malformed/cancelled calls authorize no local execution. Natural EOS/ready final validation precedes scoring; protocol completion, tool sequence and exact task success remain separate.

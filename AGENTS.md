@@ -66,7 +66,9 @@ Verify architecture details against the exact checkpoint configuration and trust
 
 ## Verification and completion
 
-Run from this repository, proportionate to the change:
+Run from this repository, proportionate to the change and authorized execution scope. The [testing guide](docs/development/testing.md) owns the target/dependency matrix; [validation](docs/development/validation.md) owns comparator formats and acceptance contracts. Current engine/service details are in the [reference](docs/README.md#understand-it), and known gaps in [limitations](docs/limitations.md).
+
+For host-only changes, start with `make BUILD=build/check-host host-test`. **`test`, `sanitize` and the following full-suite commands execute the GPU** despite requiring no model weights; they are not host-only alternatives. Optional Python/socket checks and supplied-tokenizer integrations are separate tiers. Choose only the relevant authorized checks and state omissions.
 
 ```sh
 make test

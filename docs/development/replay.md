@@ -2,7 +2,7 @@
 
 Controlled replay executes the **real native materialization path**, but selects caller-supplied token IDs instead of using the model's greedy choice. It is an opt-in diagnostic mode, never task-quality evidence. Default greedy service and existing tool profiles are unchanged. Tool profiles cannot be combined with replay.
 
-Use `tools/scenarios/replay-v2.json` with the [version 2 client](workload-scenarios.md). It declares `mode:"controlled_replay"`, ON reuse, two repetitions and these steps: create, message, checkpoint, replay, restore, replay, close. Each replay supplies `[53156,2]`; the complete scenario has eight forced selection steps and no scores. Change only the declared policy to `off` for a separately launched comparison. Run processes sequentially; retain source/build/model/tokenizer identities.
+Use `tools/scenarios/replay-v2.json` with the [version 2 client](../guides/workloads.md). It declares `mode:"controlled_replay"`, ON reuse, two repetitions and these steps: create, message, checkpoint, replay, restore, replay, close. Each replay supplies `[53156,2]`; the complete scenario has eight forced selection steps and no scores. Change only the declared policy to `off` for a separately launched comparison. Run processes sequentially; retain source/build/model/tokenizer identities.
 
 The client owns an exclusive `replay-logits.bin` in its fresh output directory. It selects server startup `--evaluation-mode controlled-replay --replay-logits FILE`. Both options are required together. The server refuses existing capture paths, even empty files; failed evidence is not removed or overwritten. The filename is never supplied over HTTP. `/info` reports generator `native_controlled_replay`, evaluation mode `controlled_replay` and both replay limits 16.
 
@@ -24,12 +24,12 @@ For every step the adapter performs normal model materialization, computes and v
 
 Version 1 file format is explicitly little-endian:
 
--16-byte file header: 8-byte `LNRPLY1` plus NUL, uint32 vocabulary 131072, uint32 limit 16.
+- 16-byte file header: 8-byte magic `LNRPLY1\0`, uint32 vocabulary 131072, uint32 limit 16.
 - Each record: four uint32 values—zero-based selection index, prefix length, forced ID, actual greedy ID—then the full prefix as uint32 IDs, then 131072 IEEE binary32 logits. No native struct padding or pointers are serialized.
 
 The prefix is the actual runtime input before selection. Records are **attempted selections**: cancellation can arrive after capture but before token publication. Only successful completed scenarios are correlated against all emitted IDs and prefixes after shutdown. Failed, partial or write-error captures remain preserved, not relabelled as completed trajectories. Writes/flushes fail closed; capture failure remains sticky across reset. At most 16 records, less than 9 MiB at context 4352.
 
-Capture adds host I/O. Its timings are diagnostic, not inference-speed acceptance. The scenario wall limit excludes startup/cleanup; retain an outer process/output/ free-space supervisor for real experiments. Memory samples are not peak measurements.
+Capture adds host I/O. Its timings are diagnostic, not inference-speed acceptance. The scenario wall limit excludes startup/cleanup; retain an outer process/output/free-space supervisor for real experiments. Memory samples are not peak measurements.
 
 ## Full-vector comparison
 
@@ -47,6 +47,7 @@ Files do not themselves attest model/code/strategy identity. Bind comparisons to
 ## Tests
 
 ```sh
+# Uses the GPU, but no weights/Python are required by this target:
 make test
 python3 -m unittest discover -s tests -p 'test_*workload*.py'
 python3 -m unittest discover -s tests -p 'test_replay_logits.py'
@@ -55,9 +56,3 @@ make workload-replay-test TOKENIZER=/path/to/official/tekken.json
 ```
 
 Tests force a token different from the stub greedy choice, verify its consumption by subsequent runtime input, full binary captures, EOS/partial/cancellation, exclusive file creation, capture failures/caps, ON/OFF restore, metadata rejection, empty/mismatched/nonfinite comparisons and deliberately changed logits. The actual CLI/socket test runs two sessions per process and eight captures per policy. Stub results are not real-weight numerical or task-quality evidence.
-
-## Bounded real-weight observation
-
-One reviewed sequential ON/OFF pair subsequently completed with compact FP8 arithmetic/MPS, context 256/chunk 256. Each process loaded the model once, ran two sessions and captured eight full 131072-element vectors. All eight matched vectors were finite and **bitwise identical** between policies. Official V13 tokenization matched the seven-token input and the complete forced ledgers. Actual greedy IDs alternated 1065/18562, distinct from the forced 53156/2 trajectory.
-
-Each reply consumed its forced non-EOS token and left EOS pending exactly once; ON restore recovered the saved cache/logits, OFF restored logical state and rebuilt its seven-token prefix. Both clients/servers exited zero and process groups were gone. No retries, trajectory changes or tolerance relaxation. Task success remained null. This is bounded native state/vector consistency, not independent numerical correctness, free-running answer quality or a performance comparison.

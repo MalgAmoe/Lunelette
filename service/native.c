@@ -570,13 +570,13 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
         "\"multi_token_block_kernel\":\"%s\","
         "\"context_capacity\":%u,\"prefill_chunk_size\":%u,\"event_bytes\":8192,"
         "\"long_context_validation\":\"%s\","
-        "\"long_context_validation_document\":\"docs/real-workload-m6.md\","
+        "\"long_context_validation_document\":\"docs/limitations.md#long-context-evidence\","
         "\"conversation_protocol\":\"%s\","
         "\"checkpoint_payload_bytes_per_handle\":524288,\"checkpoint_transient_payload_bound_bytes\":1048576,"
         "\"tools\":%s,\"checkpoints\":%s,\"reuse_new_turn\":%s,\"prefix_reuse\":\"%s\","
         "\"prefix_reuse_validation\":\"%s\","
         "\"prefix_reuse_validation_scope\":\"published source-bound evidence; no runtime attestation\","
-        "\"checkpoint_validation_document\":\"docs/real-workload-m5.md\","
+        "\"checkpoint_validation_document\":\"docs/limitations.md#checkpoint-evidence\","
         "\"numerical_validation\":\"diagnostic_known_reference_mismatches\","
         "\"numerical_validation_scope\":\"%s; strict independent reference gates unresolved\","
         "\"compact_model_validation\":\"%s\","
@@ -613,7 +613,9 @@ int service_native_open(int argc, char **argv, service_generator *generator, uns
                 "resident published evidence only; no runtime attestation"),
         memory.strategy ? "external_evidence_only" : "not_applicable",
         memory.strategy == LUNELETTE_METAL_COMPACT_FP8_LOOKUP ?
-            "docs/fp8-lookup.md" : "docs/real-workload-m4.md",
+            "docs/limitations.md#compact-lookup-evidence" :
+            (memory.strategy ? "docs/limitations.md#compact-arithmetic-evidence" :
+                "docs/limitations.md#independent-numerical-evidence"),
         memory.weight_bytes, memory.conversion_stage_bytes, memory.scratch_bytes,
         memory.kv_bytes, memory.total_bytes, SERVICE_COMMIT, SERVICE_DIRTY);
     if (written < 0 || (size_t)written >= sizeof(n->info)) {
