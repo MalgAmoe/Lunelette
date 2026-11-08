@@ -15,6 +15,41 @@ For acceptance decisions rather than another campaign, see the
 distinguishes operational delivery from validated-baseline status, and narrow
 coverage from new requirements that the original spec does not impose.
 
+## Compact optimization research: not integrated
+
+[Specification §15](real-workload-spec.md#15-follow-up-phase-compact-mpp-and-fused-attention)
+defines experiments for improved staged/direct compact MPP projections and fused
+online-softmax attention. Compact residency is the optimization target; expanded
+resident FP32 is an optional reference only. Bounded expansion scratch is allowed
+with all costs reported.
+
+Two separately archived component screens are complete: the staged cooperative
+MPP candidate and the first fused online-attention candidate passed their bounded
+numerical checks but failed their prospective speed criteria. Neither advances to
+full-engine validation as a speed candidate. Attention used synthetic FP32 inputs,
+not full-model inference; its scratch-elimination design is not a measured engine
+memory saving.
+
+Direct compact-to-tile MPP subsequently compiled and passed a bounded layer13 down-
+projection screen after the original API/syntax failure (retained separately).
+It met the prospective speed criterion at 128 rows, but not 256. A subsequent
+unchanged-kernel screen covered all seven block projections in layers 0/13/25:
+315 numerical cases passed. MLP projections at 16/128 rows and attention output
+at 128 are the strongest selective-hybrid candidates; Q128 is mixed against the
+per-process criterion, K/V regress, and no 256-row cell clears the speed gate.
+Inputs were mostly synthetic; neither whole-workload gains nor engine memory
+savings have been established.
+
+The subsequent isolated full-model hybrid trial stopped at its native numerical
+gate: one coordinate in the first failing checked cached-key vector exceeded the
+unchanged tolerance (error0.00027505, allowance0.00022344). The two checked full-logit
+vectors and native reset/restore consistency passed, but did not override that
+failure. Control256, HTTP validation and complete-request timing were withheld;
+there is no whole-workload speed result. The conversion stage remained allocated.
+No candidate has been integrated, and no retry or additional sweep follows automatically.
+This phase does not reopen operational delivery or change defaults or independent
+FAIL/open status.
+
 ## Interactive closeout
 
 The [bounded native adapter session](interactive-workload.md#bounded-native-verification)

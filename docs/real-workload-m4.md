@@ -1,5 +1,9 @@
 # M4: optional compact FP8 arithmetic execution
 
+> **Historical milestone record.** Current interface details supersede this page:
+> see the [native service contract](service.md) and [Metal runtime](metal.md).
+> The historical results and limitations below are preserved, not current defaults.
+
 Status: **A/B/C/D complete in bounded scope; compact remains optional.** Resident
 FP32 remains the default and provisional engineering control, not an independently
 validated numerical oracle or quality-approved baseline. Operator/integration and

@@ -70,7 +70,7 @@ engine source/binary hashes and exact run commands. They are deliberately not
 runtime dependencies. To reproduce the method, run the two PyTorch call shapes
 on calibration inputs, freeze limits before generating new held-out fixtures,
 then invoke the self-contained comparator with explicitly supplied shards and
-fixtures, as documented in the [validation guide](validation.md#full-forward-comparison). No Python, downloads or fixtures are required
+fixtures, as documented in the [validation guide](validation-history.md#full-forward-comparison). No Python, downloads or fixtures are required
 by `make test`.
 
 Held-outs were distinct from the five known fixtures: structured inventory JSON

@@ -22,7 +22,7 @@ not full-prefix replays; see [current validation](../../docs/validation.md).
 |---|---|
 | `compare_embeddings`, `make integration` | [Embedding bit comparison](../../docs/validation.md#optional-real-weight-validation) |
 | `compare_fp8` | [Exact reconstructed-weight hashes](../../docs/validation.md#current-mixed-checkpoint-validation) |
-| `compare_metal` | [Metal schema and verification](../../docs/metal.md#verification) |
+| `compare_metal` | [Full-model schema and verification](../../docs/validation.md#full-model-reference-comparison) |
 
 CPU projection/attention/block/forward/cache/generation consumers were retired
 after `4d4f8f8`. Their schemas, numerical findings and strict failures remain

@@ -15,6 +15,21 @@ profiles, plain-chat-only checkpoints and deferred optimization candidates. The
 adaptive session adds a five-event summary and a longer response; its formatting
 failure remains a failure. No automatic additional campaign follows.
 
+The later [compact-optimization amendment (§15)](real-workload-spec.md#15-follow-up-phase-compact-mpp-and-fused-attention)
+is a separate phase: improved compact MPP projections and fused online attention.
+The first staged-MPP and fused-attention component screens passed bounded numerical
+checks but failed their speed criteria; neither advanced to full-engine validation.
+A corrected direct compact-to-tile MPP screen passed bounded projection checks and
+its 128-row speed criterion (not 256); the original compile failure is retained.
+Broader testing then passed 315 numerical cases across seven projections and three
+layers, with shape-dependent gains and clear K/V regressions. The subsequent
+isolated full-model hybrid trial failed its unchanged cached-key numerical gate;
+passing checked logits and native reset/restore checks did not override it.
+Control256, HTTP validation and request timing were withheld. No integration or
+whole-workload speedup follows. These experiments do not expand operational
+acceptance or close the independent numerical gate. Expanded residency is an
+optional reference, not the new target.
+
 ## Reading the statuses
 
 - **Delivered / bounded evidence:** implemented and supported by the cited,

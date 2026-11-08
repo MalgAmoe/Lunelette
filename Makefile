@@ -13,6 +13,30 @@ CLI_HEADERS = include/lunelette.h include/chat.h $(TOKENIZER_HEADERS) $(GENERATI
 
 .PHONY: all test core-test sanitize clean integration
 all: $(BUILD)/lunelette
+
+# Explicit convenience entrypoints; existing defaults and suites stay unchanged.
+.PHONY: server host-test gpu-test python-test interactive-test entrypoint-test dev-check
+server: $(BUILD)/lunelette-server
+host-test: core-test
+gpu-test: metal-test
+PYTHON ?= python3
+python-test:
+	$(PYTHON) -B -m unittest discover -s tests -p 'test_*workload*.py'
+	$(PYTHON) -B -m unittest discover -s tests -p 'test_replay_logits.py'
+	$(PYTHON) -B -m unittest discover -s tests -p 'test_fp8_lookup.py'
+interactive-test: $(BUILD)/test_service_server
+	$(PYTHON) -B tests/test_interactive_workload.py ./$(BUILD)/test_service_server
+entrypoint-test:
+	sh tests/test_entrypoints.sh
+# Optional full local workflow: GPU + stdlib Python + loopback protocol checks.
+# Separate recursive invocations keep suite ordering explicit, including under -j.
+dev-check:
+	$(MAKE) BUILD="$(BUILD)" server
+	$(MAKE) BUILD="$(BUILD)" test
+	$(MAKE) BUILD="$(BUILD)" python-test
+	$(MAKE) BUILD="$(BUILD)" interactive-test
+	$(MAKE) BUILD="$(BUILD)" service-test
+	$(MAKE) BUILD="$(BUILD)" shader-facts-test dependency-test entrypoint-test
 $(BUILD):
 	mkdir -p $@
 

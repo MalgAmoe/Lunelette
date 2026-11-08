@@ -1,5 +1,9 @@
 # M2 native short-session service (operational milestone complete)
 
+> **Historical milestone record.** Current interface details supersede this page:
+> see the [native service contract](service.md) and [Metal runtime](metal.md).
+> The historical results and limitations below are preserved, not current defaults.
+
 The Darwin binary uses the existing resident FP32 runtime, not scripted IDs.
 After initially refused admission, real-weight MPS short-session checks passed
 under the unchanged memory guard: resident continuation, EOS multi-turn, streamed

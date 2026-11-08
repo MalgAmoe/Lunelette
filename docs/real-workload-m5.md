@@ -1,5 +1,9 @@
 # M5: experimental prefix checkpoints
 
+> **Historical milestone record.** Current interface details supersede this page:
+> see the [native service contract](service.md) and [Metal runtime](metal.md).
+> The historical results and limitations below are preserved, not current defaults.
+
 Runtime/service integration, bounded full-model numerical/state checking and real-model
 HTTP workload evaluation are complete. Prefix reuse remains **experimental and
 explicit**, not the default. Independent numerical acceptance remains unresolved;

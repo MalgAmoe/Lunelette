@@ -1,5 +1,9 @@
 # M6: longer context and chunked service ingestion
 
+> **Historical milestone record.** Current interface details supersede this page:
+> see the [native service contract](service.md) and [Metal runtime](metal.md).
+> The historical results and limitations below are preserved, not current defaults.
+
 M6 closes a **bounded engineering milestone**, not independent numerical or task-quality acceptance. Opt-in context4352 and chunks128/256 passed the retained real-model runtime, KV, session, cancellation and HTTP checks described below. Defaults remain context256, resident storage and legacy reuse; generation and history remain256, activations/KV FP32.
 
 ## Explicit runtime profiles

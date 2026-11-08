@@ -1,213 +1,173 @@
 # Lunelette
 
-A learning-first Ministral 3 inference engine in C.
+A learning-first Ministral 3 3B **text-only** inference engine in C, using one
+Metal/MPS runtime on Apple Silicon. It provides a persistent local diagnostic
+service, streamed multi-turn sessions, bounded tool profiles, checkpoint controls,
+and a single-turn CLI.
 
-**Experimental; validation incomplete.** The fixed-layout **3B text-only** runtime
-implements all 26 layers, final normalization, tied last-token logits, a bounded
-Tekken13 tokenizer, KV cache, and single-turn greedy generation. One engine combines
-CPU host work with resident Metal/MPS execution on supported Apple Silicon Macs.
-Prompt plus generated context is limited to **256 tokens**.
+**Experimental; independent numerical acceptance remains FAIL/open.** The agreed
+operational diagnostic scope is delivered, not a claim of production readiness or
+general model quality. See the [current status](docs/real-workload-status.md) and
+[acceptance checklist](docs/spec-closeout-checklist.md).
 
-## Quickstart
+## Start here: persistent service
 
-Run all commands in this README and the linked guides from the repository root.
-Requires macOS 15+, Apple Silicon, Make and Command Line Tools/macOS SDK.
-The application links Foundation, Metal and MetalPerformanceShaders. Python is not a
-runtime requirement. No weights, fixtures or dependencies are downloaded.
+Run commands from the repository root. Requires macOS15+, supported Apple Silicon,
+Make and Command Line Tools/macOS SDK; development validation used an Apple M5 with
+32GiB unified memory. The native application links Foundation, Metal and
+MetalPerformanceShaders. Python3 is needed for the optional interactive client,
+not for the native engine/service. Nothing is downloaded automatically.
+
+Supply the official HF-layout `Ministral-3-3B-Instruct-2512-FP8/model.safetensors`
+and its Tekken13 `tekken.json`. The paths below are Git-ignored local placeholders,
+not bundled resources. HF tokenizer JSON is not a substitute for the Tekken file.
+
+```sh
+make server
+python3 tools/interactive_workload.py \
+  --server build/lunelette-server \
+  --native-model models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
+  --native-tokenizer models/tekken.json \
+  --native-strategy compact-fp8-arithmetic --native-prefill mps \
+  --native-context 4352 --native-chunk 256 --native-prefix-reuse on \
+  --output evidence/session-001 --seconds 300 --total-budget 1024
+```
+
+The output directory must be new. After the client reports `ready`, send one JSON
+command per line, waiting for each command's `final` response before the next
+mutation:
+
+```json
+{"id":"s1","op":"create"}
+{"id":"m1","op":"message","content":"What is 17 + 25? Answer with the number only."}
+{"id":"g1","op":"generate","budget":32}
+{"id":"q1","op":"quit"}
+```
+
+This example is an invocation recipe, not a guaranteed answer. The adapter owns
+one service process and preserves evidence. Inspect/cancel can run during generation;
+other mutations must wait. See the [interactive guide](docs/interactive-workload.md)
+for complete-text output, errors, cleanup and checkpoint/tool limitations.
+
+### Recommended profile versus defaults
+
+For the measured document/history workload, use **compact arithmetic + MPS +
+context4352/chunk256 + reuseON**, as above. This is a memory-conscious recommendation
+from a bounded [workload panel](docs/useful-workload-panel.md), not a universal speed
+or correctness claim.
+
+Client defaults remain **resident FP32, MPS, context256/chunk256, legacy reuse**.
+C constructors likewise default to resident/MPS and256/256. A direct native-server
+launch requires explicit strategy and prefill flags; see the [service contract](docs/service.md).
+Lookup decoding, custom prefill and resident FP32 remain supported alternatives;
+lookup was not a consistent whole-workload winner. No failed optimization candidate
+has been integrated. The [status report](docs/real-workload-status.md) preserves the
+research outcomes separately from operational delivery.
+
+## Interfaces and limits
+
+| Interface | Scope |
+|---|---|
+| [`lunelette-server`](docs/service.md) | Local persistent service; multi-turn streaming; context256 or opt-in4352; chunks256 or128 (128 requires4352) |
+| `interactive_workload.py` | Optional bounded NDJSON client; session controls and fixed native tool profiles |
+| `lunelette` | Single system/user turn;256-token total context; buffered output |
+| Scenario/replay tooling | Reproducible diagnostic workloads; forced replay is never task-quality evidence |
+
+Checkpoints are plain-chat only and require an explicit on/off reuse policy.
+Cancellation may leave `needs_reset`; do not treat partial streamed text as a
+successful completed answer. Native tools are fixed diagnostic profiles, not
+arbitrary shell execution. Vision, batching,8B/14B models, arbitrary checkpoint
+layouts and static W8A8 execution are unsupported.
+
+## Single-turn CLI
+
+`make` still builds the CLI; this default has not changed.
 
 ```sh
 make
 ./build/lunelette --help
-make test
-make sanitize
-make BUILD=build/ndebug CFLAGS='-std=c11 -O2 -DNDEBUG -Wall -Wextra -Wpedantic' test
-```
-
-`make test` is offline, model-free and Python-free. Use separate build directories
-when changing compiler flags. `make core-test` is an optional portable host-only
-suite, not a second inference engine.
-
-Supply the official HF-layout Ministral-3-3B-Instruct-2512-FP8 `model.safetensors` and
-`tekken.json` yourself. These example paths are explicit repository-local,
-Git-ignored resources, not bundled files; no index is parsed.
-
-```sh
 ./build/lunelette \
   --weights models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
   --tokenizer models/tekken.json \
-  --system 'Be concise.' \
-  --prompt 'What is 17 + 25? Answer with the number only.' \
-  --max-new-tokens 3 --dump-output-ids
+  --metal-strategy compact-fp8-arithmetic --metal-prefill mps \
+  --system 'Be concise.' --prompt 'What is 17 + 25?' \
+  --max-new-tokens 32 --dump-output-ids
 ```
 
-The Tekken file is supplied separately; the HF tokenizer JSON is not a Tekken file.
-Text agreement is not a numerical correctness test.
+CLI framing is BOS, optional system block, then `[INST]user[/INST]`, without an
+implicit system message. `--raw` uses BOS plus ordinary text and forbids `--system`.
+Each text field is strict UTF-8, at most4096 bytes. Budget is0..256 (default32);
+prompt plus generated context must fit256. Greedy ties choose the lowest ID.
+`--dump-prompt-ids` needs no weights. Output is buffered, not streamed; EOS is
+omitted, other generated special IDs fail, and a cutoff may leave incomplete UTF-8.
+Retired `--backend`/`--uncached` selectors fail explicitly. Full contracts are in
+[the runtime guide](docs/metal.md) and public headers.
 
-## CLI behavior and limits
+## Precision and evidence
 
-- Generation uses resident weights and KV cache. `--backend` and `--uncached`
-  are retired and fail with a diagnostic. Zero budget/full context validates
-  checkpoint metadata and actual positive finite companion scales without allocating a GPU context.
-- Framing is BOS + optional `[SYSTEM_PROMPT]system[/SYSTEM_PROMPT]` +
-  `[INST]user[/INST]`, with no added spaces or implicit system message.
-  `--raw` instead uses BOS + ordinary prompt text and forbids `--system`.
-- Only a single system/user turn is supported. Literal special-token spellings
-  in input remain ordinary text. Empty prompt text is allowed; `--prompt` is required.
-- `--max-new-tokens` is decimal 0..256 (default 32). Stop reasons are EOS (ID 2),
-  budget or context limit. Oversized prompts fail; each text field is strict
-  UTF-8 and at most 4096 bytes. Greedy score ties choose the lowest token ID.
-- `--dump-prompt-ids` needs only tokenizer/prompt and exits without opening
-  weights. `--dump-output-ids` writes generated IDs including EOS to stderr
-  **after generation and successful decoding**, before stdout is written.
-- Output is **not streamed**: generated byte fragments are decoded together.
-  EOS is omitted from text; other generated special IDs fail explicitly.
-  A budget cutoff can leave incomplete UTF-8 bytes. Stdout contains only text.
+The engine reconstructs FP8 projections as decoded FP32 values multiplied by BF16
+scales widened to FP32, without BF16 product rounding. Compact storage keeps182
+projections packed; multi-token calls use a shared FP32 conversion stage. Embedding,
+tied head,53 norms, activations and KV remain FP32 during execution. Activation
+scales are validated but unused: this is not W8A8.
 
-Full argument rejection, framing, ownership and failure policies are in the
-[runtime guide](docs/metal.md) and relevant public headers.
+Multi-token projections use MPS by default; `custom` is explicit, with no silent
+fallback. Single-token projections and the head use custom arithmetic. MPS FP32
+storage does not establish its unspecified internal accumulation precision.
 
-## Execution and precision
+Keep operator checks, native regression, independent references and task outcomes
+separate. The fixed independent tolerance is `2e-4 + 1e-4*abs(reference)`; strict
+mismatches remain unresolved. Matching text or native controls does not close that
+gate. Historical CPU/BF16 findings are provenance, not current FP8 acceptance.
+See [validation](docs/validation.md), [native regression](docs/native-regression.md)
+and the [numerical review](docs/numerical-closeout-review.md).
 
-Requires macOS 15+, supported Apple Silicon, Command Line Tools/macOS SDK and
-sufficient unified memory (development validation: base Apple M5, 32 GiB).
+## Build and test
+
+For the optional standard local workflow: `make BUILD=build/dev-check dev-check`.
+It uses the GPU, standard-library Python and loopback sockets, but no model weights.
+The original `make test` remains Python-free.
+
+| Command | What it does |
+|---|---|
+| `make` / `make server` | Build CLI / native service; no inference |
+| `make host-test` | Portable C host/protocol tests; no Metal execution, Python or weights |
+| `make gpu-test` | Synthetic Metal/operator/native regression tests; uses the GPU, no weights |
+| `make test` | Existing host + GPU + CLI suite; offline, model-free, Python-free |
+| `make python-test` | Python client/scenario/comparator unit tests; no model; optional integration cases may skip |
+| `make interactive-test` | Adapter tests with the deterministic protocol server; loopback sockets, no model/GPU |
+| `make service-test` | Protocol/transport tests with deterministic server; Python and loopback sockets |
+| `make shader-facts-test dependency-test` | Shader constant and build-dependency checks; no inference |
+| `make entrypoint-test` | Dry-run checks of build/test execution boundaries; no compilation or GPU execution |
+
+**Model-free does not mean GPU-free.** Real-weight tests remain explicit and
+optional. Supply your own weights/tokenizer/fixtures; see the
+[testing guide](docs/testing.md). Use fresh build directories when changing flags:
 
 ```sh
-make BUILD=build/metal
-make BUILD=build/metal test
-build/metal/lunelette \
-  --weights models/Ministral-3-3B-Instruct-2512-FP8/model.safetensors \
-  --tokenizer models/tekken.json \
-  --prompt 'What is 2 + 2?' --max-new-tokens 32
+make BUILD=build/check-ndebug CFLAGS='-std=c11 -O2 -DNDEBUG -Wall -Wextra -Wpedantic' test
+make BUILD=build/check-asan CFLAGS='-std=c11 -O1 -g -Wall -Wextra -Wpedantic -fsanitize=address,undefined -fno-omit-frame-pointer' test
 ```
 
-Multi-token block projections default to **MPS**. Select
-`--metal-prefill custom` explicitly for the custom path;
-there is no silent fallback on MPS errors. Decode, single-token prefill and the
-vocabulary head use custom arithmetic. Removed engine selectors fail explicitly.
-By default weights, activations and KV storage are FP32. The loader expands 182
-FP8 projections
-with scalar BF16 multipliers directly into FP32, with no BF16 rounding. The
-embedding/head and 53 norms remain BF16 inputs. Activation scales are checked but
-unused: this is weight-dequantized FP32 execution, **not W8A8**. MPS
-Float32 storage does **not** establish full-FP32 internal accumulation: Apple's
-inspected API does not specify it. Custom kernels use precise FP32 math.
-Historical CPU reduction contracts are retained as provenance only.
-Select `--metal-strategy compact-fp8-arithmetic` to retain packed projection
-weights: single-token projections reconstruct weights during computation;
-multi-token projections convert through one FP32 stage before MPS/custom work.
-Embedding/head, norms, activations and KV remain FP32. Resident FP32 stays default.
-An opt-in [lookup scalar candidate](docs/fp8-lookup.md),
-`--metal-strategy compact-fp8-lookup`, changes only single-token FP8 decoding;
-it is not a default promotion or a speedup claim.
-See [M4 contracts, validation and measured tradeoff](docs/real-workload-m4.md) and
-[Metal usage, memory, ownership, precision and validation](docs/metal.md).
+`make clean` removes **all of `build/`**, regardless of `BUILD`. Do not run it on
+retained evidence builds; inventory and preserve referenced binaries first. Runtime
+evidence directories are caller-owned and should not be committed.
 
-## What the numerical evidence covers
+## Project map
 
-The mixed-checkpoint loader is covered by exhaustive FP8 encoding tests and
-synthetic metadata/scalar-read tests. Optional exact decoded-weight and independent
-FP32 prefill/cached-decode comparisons require provenance-matched fixtures from
-this checkpoint; reuse existing frozen fixtures where appropriate.
-The external-reference threshold is frozen at `2e-4 + 1e-4*abs(reference)`;
-loading success and matching greedy IDs alone do not establish a numerical baseline.
-Current FP8-derived comparisons expose strict reference mismatches at fitting longer
-contexts; independent numerical acceptance remains pending. The separate
-[native regression baseline](docs/native-regression.md) remains usable for
-unchanged-arithmetic comparisons. See the [M3 disposition](docs/real-workload-m3.md)
-for its provisional-control scope. Do not substitute archived BF16
-fixtures or infer 256-token correctness from short range probes.
-
-Historical CPU/BF16 evidence remains in the guides as provenance, not validation
-of this checkpoint contract. No batching, vision, static W8A8 execution, native
-FP8 kernels, 8B/14B or arbitrary checkpoint configuration is supported.
-
-## Documentation and source map
-
-- [Historical CPU runtime](docs/cpu-runtime.md): retired API provenance.
-- [Safetensors](docs/safetensors.md): bounded parser, reader, BF16 and embedding API.
-- [Validation](docs/validation.md): optional harness commands/schemas, provenance,
-  preserved numerical history and known gaps.
-- [Bounded full-depth acceptance](docs/full-depth-validation.md): historical frozen
-  thresholds, calibration, held-out evidence and strict diagnostics.
-- [Model facts](docs/model-facts.md) and [Metal runtime](docs/metal.md).
-- [Reference artifact index](tools/reference/README.md): supplied versus bundled tools.
-- `include/`: public contracts; `src/`: host/CLI and resident Metal implementation;
-  `tests/`: deterministic tests; `tools/`: maintained helper tooling.
+- [Documentation index](docs/README.md): current guides, validation and historical milestones.
+- `include/`, `src/`: public contracts, host/CLI and Metal/MPS implementation.
+- `service/`: persistent native service and session/transport logic.
+- `tests/`: regression tests and frozen synthetic controls.
+- `tools/`: optional clients, scenarios and validation helpers.
 
 ## Attribution and distribution
 
-Lunelette is inspired by antirez's [DwarfStar](https://github.com/antirez/ds4).
-Its tensor descriptors, data-base offsets and lazy shard access informed the
-design; the parser and reader are original, with no DwarfStar code reused or
-modified. No upstream checkout is required. Transformers YaRN adaptations and
-Unicode-table notices are retained in [NOTICE](NOTICE) and the referenced license
-files. Adapted code must retain required attribution and license notices.
+Inspired by antirez's [DwarfStar](https://github.com/antirez/ds4): its tensor
+descriptors, data-base offsets and lazy shard access informed the design. The parser
+and reader are original; no DwarfStar code was reused or modified, and no upstream
+checkout is required. Transformers YaRN adaptations and Unicode-table notices are
+retained in [NOTICE](NOTICE) and the referenced license files. Adapted code must
+retain the required attribution and license notices.
 
 The project's own distribution license has not yet been selected.
-
-## Correctness roadmap
-
-The single-file FP8 checkpoint port does not change kernels or model math. Before
-calling it an independently validated numerical baseline, require independently generated FP32
-prefill, real multi-step cached decode, reset/reuse and near-256 comparisons for
-both MPS and custom. Keep the frozen external tolerance and raw mismatch vectors;
-resolve acceptance separately rather than quietly loosening a failing gate.
-The existing native regression suite is the foundation for candidate comparisons;
-unresolved independent differences are not a blanket prohibition on provisional
-engineering experiments. Native FP8/W8A8 execution remains unsupported.
-M4's optional compact-storage
-strategy completed bounded native/state and task checks plus matched-work
-measurements under the [M3 conditions](docs/real-workload-m3.md#m4-entry-conditions).
-Known unchanged strict reference failures remain documented, not automatically a
-reason for another tracing campaign or an indefinite engineering blocker.
-
-## Real-workload service
-
-The [builder specification](docs/real-workload-spec.md)'s agreed operational
-diagnostic scope is delivered; independent numerical acceptance remains FAIL/open.
-The [interactive adapter](docs/interactive-workload.md) supports persistent agent-led
-exploration, streamed or complete answers, controls and retained evidence. See the
-[closeout checklist](docs/spec-closeout-checklist.md) for scope and limitations. The
-[delivery plan](docs/real-workload-plan.md) and
-[M1 protocol guide](docs/real-workload-m1.md) describe the model-free foundation.
-The [M2 service guide](docs/real-workload-m2.md) covers real resident execution.
-
-M1 provides a native loopback **test service with a deterministic generator**,
-model-free state/transport tests, and a standard-library Python scenario client.
-It does not load weights or perform inference.
-
-M2 adds `build/lunelette-server`: a native loopback resident-FP32 service with
-pinned text-only multi-turn framing, authoritative token continuation, UTF-8
-streaming, cancellation and request measurements. Context remains 256 tokens.
-Both MPS and custom-prefill short-session checks passed; numerical status remains
-**diagnostic**, with independent discrepancies unresolved. M4 adds optional compact
-storage. [M5](docs/real-workload-m5.md) adds experimental prefix checkpoint controls
-with bounded full-model/state checks and real HTTP workload evaluation. Task quality
-is unchanged; measured benefits depend on workload and are versus explicit full
-recomputation, not the legacy policy. Resident/legacy defaults remain unchanged.
-[M6](docs/real-workload-m6.md) adds opt-in4352-position
-context and128/256-ID chunked ingestion, with bounded real-model runtime/session
-validation. Independent long-context correctness remains unverified; the useful-work
-panel passed2/3 distinct tasks under both reuse policies. Defaults remain256/resident/legacy.
-See [regression tooling](docs/long-context-testing.md) for fresh current-source builds;
-the [HTTP repeat](docs/long-context-http-testing.md) has separate verification scope.
-Protocol-test success is not model task success or performance evidence.
-Native [calculator, frozen-document lookup and saved observations](docs/native-tool-loop.md)
-now have bounded real-model observations. [Version2 workload scenarios](docs/workload-scenarios.md)
-add explicit reuse policy, checkpoint/restore recipes and bounded repetitions. The [coverage report](docs/real-workload-status.md)
-maps the specification to implementation/evidence, preserves task failures and
-lists remaining validation work and execution strategies.
-
-M3 completes the bounded investigation and session/task evaluation, not independent
-numerical acceptance. The [M3 disposition](docs/real-workload-m3.md) restores the
-existing layered testing strategy: operator checks, native regression, independent
-reference comparisons and task behavior remain separate. The frozen task panel
-passes three of seven examples; failures are retained.
-
-[M4](docs/real-workload-m4.md) completes optional compact FP8 storage in the same
-engine and service (`--strategy compact-fp8-arithmetic`). Tested native logits and
-state matched the control; all 64 task responses were unchanged. On the development
-machine, MPS decode was roughly 1.9–2.0x faster and sampled process footprint after
-warmup fell from 12.99 to 4.64 GiB, but prefill cost an extra ~0.11s. These bounded,
-battery-powered measurements are not peak-memory or general hardware guarantees.
-Compact remains optional; resident remains default.

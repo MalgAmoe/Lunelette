@@ -1,7 +1,10 @@
 # Real-workload M1 execution plan (prototype v1)
 
-The user-owned real-workload-spec.md remains the target, unchanged. M1 delivers
-only a model-free foundation, not the real service or full specification.
+> Historical M1 implementation plan, not the current delivery status. See the
+> [coverage report](real-workload-status.md) for delivered capabilities and the
+> [specification](real-workload-spec.md) for subsequent amendments.
+
+M1 delivered only a model-free foundation, not the real service or full specification.
 
 ## Sequence
 1. Inspect existing JSON parser; reuse strict string decoding and primitives.
