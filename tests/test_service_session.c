@@ -11,7 +11,8 @@ static void drain(char *text, const char *terminal)
             CHECK(strchr(event, '\n'));
             if (strstr(event, "text_delta")) {
                 tj_document d;
-                CHECK(tj_read_memory(event, strlen(event), &d));
+                CHECK(tj_read_memory_limits(event, strlen(event), &d,
+                    8192, 4096, TJ_MAX_NODES, 32));
                 unsigned n = tj_field(&d, 1, "text");
                 size_t old = strlen(text);
                 memcpy(text + old, d.nodes[n].text, d.nodes[n].length);
@@ -172,9 +173,14 @@ static void checkpoint_tests(void)
     CHECK(route("POST", "/sessions/1/checkpoint", "{\"id\":\"carry\"}") == 409);
     CHECK(route("POST", "/sessions/1/generate", "{\"id\":\"partial\",\"budget\":2}") == 200);
     drain(text, "\"event\":\"completed\"");
+    service_disconnect_request(&session, "partial");
+    service_disconnect_request(&session, "missing");
+    CHECK(route("GET", "/requests/partial", "") == 200);
+    CHECK(strstr(reply, "\"status\":\"completed\""));
+    CHECK(strstr(reply, "\"cancel_requested\":false"));
     CHECK(route("POST", "/sessions/1/checkpoint", "{\"id\":\"save\"}") == 202);
     /* Admission disconnect must not cancel a control. */
-    service_disconnect(&session);
+    service_disconnect_request(&session, "save");
     service_disconnect_request(&session, "partial");
     wait_control("save", "\"status\":\"completed\"");
     CHECK(strstr(reply, "\"operation\":\"checkpoint\""));
@@ -271,6 +277,8 @@ static void checkpoint_tests(void)
     CHECK(route("POST", "/sessions/1/reset", "{}") == 409);
     CHECK(route("POST", "/sessions/1/checkpoint", "{\"id\":\"busy\"}") == 409);
     service_disconnect_request(&session, "branch2");
+    service_disconnect_request(&session, "blocked-save");
+    service_disconnect_request(&session, "");
     CHECK(route("GET", "/requests/blocked-save", "") == 200);
     CHECK(strstr(reply, "\"cancel_requested\":false"));
     CHECK(route("POST", "/requests/blocked-save/cancel", "{}") == 200);
@@ -338,7 +346,7 @@ int main(void)
     char deep[256];
     memset(deep, '[', 40);
     memset(deep + 40, ']', 40);
-    CHECK(!tj_read_memory(deep, 80, &d));
+    CHECK(!tj_read_memory_limits(deep, 80, &d, 8192, 4096, TJ_MAX_NODES, 32));
     fake f = {0};
     CHECK(!pthread_mutex_init(&f.lock, NULL));
     CHECK(!pthread_cond_init(&f.wake, NULL));
@@ -570,7 +578,14 @@ int main(void)
                 nanosleep(&delay, NULL);
             }
         } else {
-            service_disconnect(&session);
+            /* Absent and nonmatching identities must leave the blocked job intact. */
+            service_disconnect_request(&session, "");
+            service_disconnect_request(&session, "missing");
+            pthread_mutex_lock(&session.lock);
+            CHECK(session.job && !session.cancel);
+            CHECK(!session.history[session.active].cancel_received_ms);
+            pthread_mutex_unlock(&session.lock);
+            service_disconnect_request(&session, "stop");
         }
         pthread_mutex_lock(&f.lock);
         f.released = 1;

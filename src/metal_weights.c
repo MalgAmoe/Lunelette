@@ -230,13 +230,6 @@ failure:
     return -1;
 }
 
-int lunelette_metal_weights_account(const lunelette_metal_weights *weights,
-    lunelette_metal_strategy strategy, lunelette_metal_memory *memory)
-{
-    return lunelette_metal_weights_account_configured(weights, strategy,
-        (lunelette_metal_limits){256, 256}, memory);
-}
-
 int lunelette_metal_weights_account_configured(const lunelette_metal_weights *weights,
     lunelette_metal_strategy strategy, lunelette_metal_limits limits,
     lunelette_metal_memory *memory)

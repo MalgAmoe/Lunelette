@@ -5,7 +5,6 @@
 #include <string.h>
 
 #define TJ_MAX_FILE (32u * 1024u * 1024u)
-#define TJ_MAX_NODES 1500000u
 
 int tj_utf8(const unsigned char *s, size_t n, size_t *width, unsigned *codepoint)
 {
@@ -349,11 +348,6 @@ int tj_read(const char *path, tj_document *d)
         return 0;
     }
     return 1;
-}
-
-int tj_read_memory(const void *data, size_t length, tj_document *d)
-{
-    return tj_read_memory_limits(data, length, d, 8192, 4096, TJ_MAX_NODES, 32);
 }
 
 int tj_read_memory_limits(const void *data, size_t length, tj_document *d,

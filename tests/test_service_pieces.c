@@ -110,7 +110,7 @@ static void finish(char *assembled)
         while (service_event(&session, event)) {
             tj_document d;
             CHECK(strlen(event) < SERVICE_EVENT_BYTES);
-            CHECK(tj_read_memory(event, strlen(event), &d));
+            CHECK(tj_read_memory_limits(event, strlen(event), &d, 8192, 4096, TJ_MAX_NODES, 32));
             unsigned text = tj_field(&d, 1, "text");
             CHECK(strlen(assembled) + d.nodes[text].length < 8192);
             strncat(assembled, (const char *)d.nodes[text].text, d.nodes[text].length);

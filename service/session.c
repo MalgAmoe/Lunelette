@@ -811,15 +811,6 @@ void service_disconnect_request(service_session *s, const char *id)
     pthread_mutex_unlock(&s->lock);
 }
 
-void service_disconnect(service_session *s)
-{
-    pthread_mutex_lock(&s->lock);
-    if (s->job && !strcmp(s->history[s->active].operation, "generate")) {
-        cancel_locked(s, "disconnect");
-    }
-    pthread_mutex_unlock(&s->lock);
-}
-
 int service_event(service_session *s, char *event)
 {
     pthread_mutex_lock(&s->lock);

@@ -2,12 +2,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-int service_frame(const lunelette_tokenizer *tokenizer, const unsigned char *text,
-                  size_t length, int initial, unsigned *output, unsigned *capacity)
-{
-    return service_frame_with_limit(tokenizer, text, length, 4096, initial, output, capacity);
-}
-
 int service_frame_with_limit(const lunelette_tokenizer *tokenizer, const unsigned char *text,
     size_t length, size_t input_limit, int initial, unsigned *output, unsigned *capacity)
 {

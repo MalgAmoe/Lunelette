@@ -15,7 +15,7 @@ int main(void)
     CHECK(d.capacity == 64 && d.nodes[1].length == 32768);
     CHECK(d.nodes[1].text >= d.data && d.nodes[1].text < d.data + d.length);
     tj_free(&d);
-    CHECK(!tj_read_memory(body, 32770, &d));
+    CHECK(!tj_read_memory_limits(body, 32770, &d, 8192, 4096, TJ_MAX_NODES, 32));
     body[32769] = 'a';
     body[32770] = '"';
     CHECK(!tj_read_memory_limits(body, 32771, &d, 262144, 32768, 64, 4));
@@ -29,7 +29,7 @@ int main(void)
     CHECK(tj_read_memory_limits("[[[[0]]]]", 9, &d, 262144, 32768, 64, 4));
     tj_free(&d);
     CHECK(!tj_read_memory_limits("[[[[[0]]]]]", 11, &d, 262144, 32768, 64, 4));
-    CHECK(tj_read_memory("[[[[[0]]]]]", 11, &d));
+    CHECK(tj_read_memory_limits("[[[[[0]]]]]", 11, &d, 8192, 4096, TJ_MAX_NODES, 32));
     tj_free(&d);
     size_t used = 0;
     body[used++] = '[';
@@ -41,7 +41,7 @@ int main(void)
     }
     body[used++] = ']';
     CHECK(!tj_read_memory_limits(body, used, &d, 262144, 32768, 64, 4));
-    CHECK(tj_read_memory(body, used, &d));
+    CHECK(tj_read_memory_limits(body, used, &d, 8192, 4096, TJ_MAX_NODES, 32));
     tj_free(&d);
     CHECK(!service_json("{\"x\":\"\\u0000\"}", 14, "|x|", &d));
     CHECK(!service_json("{\"x\":0,\"x\":0}", 13, "|x|", &d));

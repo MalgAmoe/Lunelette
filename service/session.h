@@ -126,7 +126,6 @@ int service_route(service_session *s, const char *method, const char *path,
  * Takes the session mutex; do not call while holding it. */
 void service_transport_error(service_session *s, const char *error, char *reply, size_t size);
 int service_event(service_session *s, char *event);
-void service_disconnect(service_session *s);
 /* Transport captures the admitted generation ID, never targets a later job. */
 void service_disconnect_request(service_session *s, const char *id);
 /* Strict flat object schema, rejecting NUL even in escaped strings. */

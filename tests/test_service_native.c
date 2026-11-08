@@ -240,7 +240,8 @@ int main(int argc, char **argv)
     CHECK(!strstr(generator.info, "MPS accumulation unspecified"));
     CHECK(strlen(generator.info) + 256 < 4096); /* /info process sample also fits. */
     tj_document info;
-    CHECK(tj_read_memory(generator.info, strlen(generator.info), &info));
+    CHECK(tj_read_memory_limits(generator.info, strlen(generator.info), &info,
+        8192, 4096, TJ_MAX_NODES, 32));
     CHECK(tj_field(&info, 1, "execution_strategy") != 0);
     tj_free(&info);
     generator.destroy(generator.context);

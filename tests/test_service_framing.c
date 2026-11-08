@@ -28,7 +28,7 @@ int main(int argc, char **argv)
             const tj_node *text = &document.nodes[content];
             if (document.nodes[role].length == 4) {
                 unsigned capacity = 256 - used;
-                CHECK(service_frame(tokenizer, text->text, text->length, !used,
+                CHECK(service_frame_with_limit(tokenizer, text->text, text->length, 4096, !used,
                                     actual + used, &capacity));
                 used += capacity;
             } else {
@@ -53,7 +53,8 @@ int main(int argc, char **argv)
         unsigned output[256];
         memset(output, 0x5a, sizeof(output));
         unsigned capacity = 2;
-        CHECK(!service_frame(tokenizer, (const unsigned char *)"Hi", 2, 1, output, &capacity));
+        CHECK(!service_frame_with_limit(tokenizer, (const unsigned char *)"Hi", 2,
+            4096, 1, output, &capacity));
         CHECK(output[0] == 0x5a5a5a5a && capacity == 2);
         tested++;
     }

@@ -45,7 +45,7 @@ static void wait_terminal(const char *terminal)
         CHECK(strstr(event, "\"evaluation_mode\":\"controlled_replay\""));
         CHECK(strstr(event, "\"replay_tokens\":["));
         tj_document d;
-        CHECK(tj_read_memory(event, strlen(event), &d));
+        CHECK(tj_read_memory_limits(event, strlen(event), &d, 8192, 4096, TJ_MAX_NODES, 32));
         tj_free(&d);
         if (strstr(event, terminal)) {
             return;

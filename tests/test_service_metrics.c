@@ -64,7 +64,8 @@ int main(void)
     CHECK(strlen(session.events[0]) < SERVICE_EVENT_BYTES);
     printf("maximum exercised metrics=%zu terminal=%zu\n", strlen(measured), strlen(session.events[0]));
     tj_document d;
-    CHECK(tj_read_memory(session.events[0], strlen(session.events[0]), &d));
+    CHECK(tj_read_memory_limits(session.events[0], strlen(session.events[0]), &d,
+        8192, 4096, TJ_MAX_NODES, 32));
     CHECK(d.nodes[tj_field(&d, 1, "metrics")].kind == '{');
     tj_free(&d);
     memset(r->text, 1, 4096);

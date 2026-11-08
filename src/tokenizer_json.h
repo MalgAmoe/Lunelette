@@ -3,6 +3,8 @@
 #define LUNELETTE_TOKENIZER_JSON_H
 #include <stddef.h>
 
+#define TJ_MAX_NODES 1500000u
+
 typedef struct {
     unsigned char *text;
     size_t length;
@@ -22,9 +24,8 @@ typedef struct {
 } tj_document;
 int tj_read(const char *path, tj_document *doc);
 /* Copies bounded input; document owns decoded storage. Same strict grammar as files.
- * data must be a valid pointer even when length is zero; doc must be non-NULL. */
-int tj_read_memory(const void *data, size_t length, tj_document *doc);
-/* Explicit memory-only bounds; file and legacy memory defaults are unchanged.
+ * data must be a valid pointer even when length is zero; doc must be non-NULL.
+ * Explicit memory-only bounds; file defaults are unchanged.
  * Nodes include the reserved missing-node sentinel. Decoded strings alias data. */
 int tj_read_memory_limits(const void *data, size_t length, tj_document *doc,
                           size_t body_limit, size_t string_limit,
