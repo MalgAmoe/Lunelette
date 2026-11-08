@@ -1,4 +1,4 @@
-/* Reuse reviewed observers and actual native/controller implementation, not a replica. */
+/* Live observers and actual native/controller implementation, not a replica. */
 #include "controller_probe.c"
 
 static void short_run(native_service *n, int cancel)
@@ -118,6 +118,7 @@ int main(int argc,char **argv)
     unsigned policy=!strcmp(argv[7],"on") ? 1 : 2;
     native_service *n;
 #ifdef CONTROLLER_STUB
+    test_support(endpoint_dir);
     n=calloc(1,sizeof(*n));
     CHECK(n);
     n->runtime=calloc(1,sizeof(*n->runtime));

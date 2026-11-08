@@ -1,5 +1,5 @@
-/* Source-bound C preparation probe. Synthetic IDs are NOT framed user text.
- * Real build forwards native callbacks to Metal; authorized model entry requires validated arguments. */
+/* Live short-test observers, replay controls and model admission support.
+ * Included by short.c; synthetic IDs are NOT framed user text. */
 #define _POSIX_C_SOURCE 200809L
 #ifdef CONTROLLER_STUB
 #include "tests/support/native_runtime.h"
@@ -115,7 +115,7 @@ static int trace_restore(lunelette_metal *r, const lunelette_metal_checkpoint *c
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 #endif
 
-static unsigned probe_policy, probe_block, probe_calls;
+static unsigned probe_policy, probe_block;
 static const char *probe_case;
 static void endpoint(native_service *n, const char *label);
 static void prefix_hashes(native_service *n, unsigned length, unsigned char out[52][32])
@@ -178,7 +178,6 @@ static int observed_step(void *context, const unsigned *ids, unsigned length,
     native_service *n = context;
     unsigned before = n->length;
     int status = native_materialize_step(context, ids, length, cursor);
-    probe_calls++;
     flockfile(stdout);
     char digest[65];
     target_digest(ids, length, digest);
@@ -207,78 +206,6 @@ static int observed_restore(void *context)
         puts("{\"type\":\"OFF_restore_empty\",\"rematerialization_required\":true}");
     }
     return result;
-}
-
-/* Runs the production controller's multi-block ingestion loop, not a replica.
- * Caller owns a single live native owner. No worker/thread is launched here. */
-int controller_probe_subset(native_service *n, unsigned policy, unsigned block)
-{
-    service_session *s = calloc(1, sizeof(*s));
-    CHECK(s);
-    CHECK(!pthread_mutex_init(&s->lock, NULL));
-    probe_policy = policy;
-    probe_block = block;
-    probe_calls = 0;
-    s->generator = (service_generator){.context = n, .materialize_step = observed_step,
-        .work = native_work, .context_capacity = 4352, .block_capacity = block};
-    for (unsigned i = 0; i < 4352; i++) {
-        s->tokens[i] = 1000 + (37 * i) % 8000;
-    }
-    unsigned lengths[] = {257, 4096, 4351};
-    for (unsigned row = 0; row < 3; row++) {
-        probe_case = row == 0 ? "initial257" : row == 1 ? "prefix4096" : "capacity4351";
-        for (unsigned i = 0; i < 4352; i++) {
-            s->tokens[i] = 1000 + (37 * i) % 8000;
-        }
-        native_reset(n);
-        native_begin(n);
-        s->committed = s->pending = 0;
-        s->logical = lengths[row];
-        service_work total = {0};
-        CHECK(materialize(s, &total) == 1);
-        CHECK(total.prefill_calls == 1);
-        CHECK(total.append_calls == (s->logical - 1) / block);
-        CHECK(n->length == s->logical);
-        int token = native_next(n);
-        CHECK(token >= 0);
-        printf("{\"type\":\"selection\",\"forced\":false,\"logits_unmodified\":true,\"id\":%d}\n", token);
-        /* Observe the native selection, then explicitly replace the pending ID
-         * with the frozen non-EOS input; native_next sets pending even for EOS. */
-        n->emitted = 9000;
-        n->pending = 1;
-        puts("{\"type\":\"subset_teacher_forcing\",\"forced_id\":9000,\"natural_EOS_ready_claim\":false}");
-        s->tokens[s->logical++] = 9000;
-        s->pending = 1;
-        probe_case = "pending_reconcile";
-        memset(&total, 0, sizeof(total));
-        CHECK(materialize(s, &total) == 1);
-        CHECK(total.pending_committed == 1);
-        if (policy) {
-            CHECK(native_save(n) == 1);
-            CHECK(observed_restore(n) == 1);
-            if (policy == 2) {
-                /* OFF restore resets runtime; never claim retained KV here. */
-                CHECK(n->length == 0 && n->logits == NULL);
-                s->committed = 0;
-                probe_case = "off_restore_rematerialization";
-                memset(&total, 0, sizeof(total));
-                CHECK(materialize(s, &total) == 1);
-                CHECK(total.recompute_committed == s->logical);
-            }
-        }
-        if (row == 2) {
-            unsigned calls = probe_calls;
-            CHECK(native_next(n) == -1);
-            CHECK(probe_calls == calls);
-        }
-    }
-    printf("{\"type\":\"subset_bound\",\"policy\":%u,\"block\":%u,"
-           "\"materialize_step_calls\":%u,\"scope\":\"partial_not_campaign_C\","
-           "\"footprint_point\":%llu}\n", policy, block, probe_calls,
-           (unsigned long long)service_process_footprint());
-    pthread_mutex_destroy(&s->lock);
-    free(s);
-    return 0;
 }
 
 /* Barrier instrumentation is after the native forward, before the controller
@@ -465,258 +392,9 @@ static void digits(service_session *s, unsigned count, unsigned expected_length)
     CHECK(s->logical - before == expected_length);
 }
 
-static uint64_t prime(service_session *s, native_service *n)
-{
-    probe_case = "public_prime128_forcedEOS";
-    route(s, "/sessions/1/reset", "{}", 200);
-    /* Initial framing3 + 124 digit IDs + forced EOS1 = 128. */
-    digits(s, 124, 127);
-    forced_id = 2;
-    job(s, "generate", 0);
-    CHECK(s->logical == 128 && s->pending == 1 && !strcmp(s->state, "ready"));
-    unsigned prior = save_calls;
-    job(s, "checkpoint", 0);
-    CHECK(save_calls == prior + 1 && s->committed == 128 && !s->pending);
-    service_work w = s->history[s->active].work;
-    CHECK(w.decode_calls == 1 && w.pending_committed == 1);
-    endpoint(n, "public_prime128_materializedEOS");
-    uint64_t saved = s->checkpoint_id;
-    CHECK(saved && s->checkpoint_length == 128);
-    job(s, "restore", saved);
-    CHECK(s->logical == 128 && !strcmp(s->state, "ready") && !s->pending);
-    if (n->policy == 2) {
-        CHECK(!n->length && !n->logits && !s->committed);
-        /* Checkpoint materialization is a real worker job, not a scalar edit. */
-        job(s, "checkpoint", 0);
-        w = s->history[s->active].work;
-        CHECK(w.prefill_calls == 1 && w.recompute_committed == 128);
-        CHECK(n->length == 128 && n->logits);
-        saved = s->checkpoint_id;
-        endpoint(n, "public_OFF_restore_rematerialized128");
-    }
-    char body[128];
-    snprintf(body, sizeof(body), "{\"id\":\"no-user%u\",\"budget\":1}", route_serial++);
-    route(s, "/sessions/1/generate", body, 409);
-    return saved;
-}
-
-static void cancellation(service_session *s, native_service *n, int replacement, unsigned position)
-{
-    uint64_t saved = 0;
-    if (n->policy) {
-        saved = prime(s, n);
-        digits(s, 511, 513);
-        CHECK(s->logical == 641);
-    } else {
-        route(s, "/sessions/1/reset", "{}", 200);
-        digits(s, 510, 513);
-    }
-    unsigned work_length = !n->policy || (n->policy == 2 && !replacement) ? s->logical : 513;
-    unsigned blocks = (work_length + n->block - 1) / n->block;
-    unsigned target = position == 0 ? 1 : position == 1 ? (blocks + 1) / 2 : blocks;
-    probe_case = replacement ? "public_replacement_cancel" : "public_generation_cancel";
-    pthread_mutex_lock(&gate_lock);
-    gate_target = target;
-    gate_count = 0;
-    gate_release = gate_held = 0;
-    pthread_mutex_unlock(&gate_lock);
-    unsigned samples = sample_calls, saves = save_calls, calls = probe_calls;
-    char path[128], body[128], id[65];
-    snprintf(id, sizeof(id), "cancel%u", route_serial++);
-    snprintf(path, sizeof(path), "/sessions/1/%s", replacement ? "checkpoint" : "generate");
-    snprintf(body, sizeof(body), replacement ? "{\"id\":\"%s\"}" :
-             "{\"id\":\"%s\",\"budget\":1}", id);
-    route(s, path, body, replacement ? 202 : 200);
-    pthread_mutex_lock(&gate_lock);
-    struct timespec deadline;
-    clock_gettime(CLOCK_REALTIME, &deadline);
-    deadline.tv_sec += WAIT_SECONDS;
-    while (!gate_held) {
-        CHECK(!pthread_cond_timedwait(&gate_wake, &gate_lock, &deadline));
-    }
-    pthread_mutex_unlock(&gate_lock);
-    CHECK(probe_calls == calls + target);
-    pthread_mutex_lock(&s->lock);
-    printf("{\"type\":\"barrier_controller_state\",\"policy\":%u,\"block\":%u,"
-           "\"logical\":%u,\"committed\":%u,\"pending\":%u,\"native_cursor\":%u,"
-           "\"checkpoint\":%llu}\n", n->policy, n->block, s->logical, s->committed,
-           s->pending, n->length, (unsigned long long)s->checkpoint_id);
-    pthread_mutex_unlock(&s->lock);
-    CHECK(sample_calls == samples && save_calls == saves);
-    snprintf(path, sizeof(path), "/requests/%s/cancel", id);
-    route(s, path, "{}", 200);
-    pthread_mutex_lock(&gate_lock);
-    gate_release = 1;
-    pthread_cond_broadcast(&gate_wake);
-    pthread_mutex_unlock(&gate_lock);
-    idle(s);
-    pthread_mutex_lock(&gate_lock);
-    gate_target = 0;
-    pthread_mutex_unlock(&gate_lock);
-    CHECK(probe_calls == calls + target && sample_calls == samples && save_calls == saves);
-    CHECK(!strcmp(s->state, "needs_reset") && !s->checkpoint_id && !n->checkpoint);
-    CHECK(!strcmp(s->history[s->active].status, "cancelled"));
-    if (saved) {
-        snprintf(body, sizeof(body), "{\"id\":\"old%u\",\"checkpoint_id\":\"%llu\"}",
-                 route_serial++, (unsigned long long)saved);
-        route(s, "/sessions/1/restore", body, 409);
-    }
-    CHECK(probe_calls == calls + target && sample_calls == samples && save_calls == saves);
-    printf("{\"type\":\"cancel_verified\",\"policy\":%u,\"block\":%u,"
-           "\"replacement\":%s,\"position\":%u,\"blocks\":%u,\"completed\":%u,"
-           "\"old_checkpoint\":%llu,\"needs_reset\":true}\n", n->policy, n->block,
-           replacement ? "true" : "false", position, blocks, target, (unsigned long long)saved);
-    route(s, "/sessions/1/reset", "{}", 200);
-    digits(s, 1, 4);
-    forced_id = 9000;
-    job(s, "generate", 0);
-    CHECK(sample_calls == samples + 1);
-    /* A cancel against the now-published completion cannot undo it. */
-    snprintf(path, sizeof(path), "/requests/%s/cancel", s->history[s->active].id);
-    unsigned length = s->logical;
-    route(s, path, "{}", 200);
-    CHECK(!strcmp(s->history[s->active].status, "completed") && s->logical == length);
-}
-
 static void retained_owner(void *context)
 {
     (void)context; /* Joining worker transfers the still-live owner back to main. */
-}
-
-static void public_cases(native_service *n)
-{
-    service_session *s = calloc(1, sizeof(*s));
-    CHECK(s);
-    service_generator g = {.context = n, .next = selected_next, .reset = native_reset, .destroy = retained_owner,
-        .frame = native_frame, .piece = native_piece, .eos = 2,
-        .prefix_reuse = n->policy, .begin = native_begin, .save = counted_save,
-        .restore = observed_restore, .invalidate = native_invalidate, .work = native_work,
-        .materialize_step = gated_step, .context_capacity = 4352, .block_capacity = n->block};
-    CHECK(service_init(s, g));
-    route(s, "/sessions", "{}", 200);
-    probe_case = "public_initial257_pending_reconciliation";
-    digits(s, 254, 257);
-    forced_id = 9000;
-    job(s, "generate", 0);
-    CHECK(s->logical == 258 && s->pending == 1);
-    job(s, "generate", 0);
-    CHECK(s->logical == 259 && s->pending == 1);
-    route(s, "/sessions/1/reset", "{}", 200);
-    if (!n->policy) {
-        route(s, "/sessions/1/checkpoint", "{\"id\":\"unsupported-save\"}", 501);
-        route(s, "/sessions/1/restore", "{\"id\":\"unsupported-restore\",\"checkpoint_id\":\"1\"}", 501);
-    }
-    for (unsigned replacement = 0; replacement < (n->policy ? 2u : 1u); replacement++) {
-        for (unsigned position = 0; position < 3; position++) {
-            cancellation(s, n, (int)replacement, position);
-        }
-    }
-    if (n->policy) {
-        route(s, "/sessions/1/reset", "{}", 200);
-        /* Explicit controlled controller ledger, not a framed public message. */
-        pthread_mutex_lock(&s->lock);
-        CHECK(!s->job && !s->reset_job);
-        for (unsigned i = 0; i < 4351; i++) {
-            s->tokens[i] = 1000 + (37 * i) % 8000;
-        }
-        s->logical = 4351;
-        pthread_mutex_unlock(&s->lock);
-        probe_case = "controlled_controller_capacity_pending";
-        forced_id = 9000;
-        job(s, "generate", 0);
-        CHECK(s->logical == 4352 && s->pending == 1);
-        job(s, "checkpoint", 0);
-        CHECK(!s->pending && s->committed == 4352);
-        CHECK(s->history[s->active].work.pending_committed == 1);
-        uint64_t saved = s->checkpoint_id;
-        for (unsigned branch = 0; branch < 2; branch++) {
-            job(s, "restore", saved);
-            unsigned calls = probe_calls, samples = sample_calls;
-            char body[128];
-            snprintf(body, sizeof(body), "{\"id\":\"capacity%u\",\"budget\":1}", route_serial++);
-            route(s, "/sessions/1/generate", body, 422);
-            CHECK(probe_calls == calls && sample_calls == samples);
-            if (n->policy == 2) {
-                job(s, "checkpoint", 0);
-                saved = s->checkpoint_id;
-                CHECK(s->history[s->active].work.recompute_committed == 4352);
-            }
-        }
-    }
-    service_destroy(s); /* Worker join transfers the owner back to main. */
-    free(s);
-}
-
-/* These are controlled adapter ledgers, NOT public framed messages. */
-static void adapter_ingest(native_service *n, unsigned *ids, unsigned length)
-{
-    unsigned cursor = n->length;
-    int result;
-    do {
-        result = observed_step(n, ids, length, &cursor);
-        service_work receipt;
-        native_work(n, &receipt);
-        CHECK(result == 1 || result == 2);
-    } while (result == 2);
-    CHECK(n->length == length);
-}
-
-static void adapter_branches(native_service *n)
-{
-    unsigned ids[4352];
-    for (unsigned i = 0; i < 4352; i++) {
-        ids[i] = 1000 + (37 * i) % 8000;
-    }
-    const unsigned tails[] = {0, 1, 127, 128, 255};
-    for (unsigned row = 0; row < sizeof(tails) / sizeof(*tails); row++) {
-        native_reset(n);
-        native_begin(n);
-        probe_case = "controlled_adapter_prefix4096";
-        adapter_ingest(n, ids, 4096);
-        if (n->policy) {
-            CHECK(native_save(n) == 1);
-        }
-        unsigned char retained[52][32], after[52][32];
-        prefix_hashes(n, 4096, retained);
-        float *first = malloc(131072 * sizeof(float));
-        CHECK(first);
-        /* Untouched, restore/replay, divergent branch, restore/rebranch. */
-        for (unsigned branch = 0; branch < 4; branch++) {
-            if (branch) {
-                if (n->policy) {
-                    CHECK(observed_restore(n) == 1);
-                } else {
-                    native_reset(n);
-                    native_begin(n);
-                    adapter_ingest(n, ids, 4096);
-                }
-            }
-            if (n->policy == 1) {
-                prefix_hashes(n, 4096, after);
-                CHECK(!memcmp(retained, after, sizeof(after)));
-            }
-            unsigned old = ids[4096];
-            if (branch == 2 && tails[row]) {
-                ids[4096] = 8999;
-            }
-            native_begin(n);
-            probe_case = branch == 2 ? "controlled_adapter_divergent_tail" :
-                "controlled_adapter_original_tail";
-            adapter_ingest(n, ids, 4096 + tails[row]);
-            prefix_hashes(n, 4096, after);
-            CHECK(!memcmp(retained, after, sizeof(after)));
-            if (!branch) {
-                memcpy(first, n->logits, 131072 * sizeof(float));
-            } else if (branch != 2) {
-                CHECK(!memcmp(first, n->logits, 131072 * sizeof(float)));
-            }
-            printf("{\"type\":\"branch_verified\",\"policy\":%u,\"block\":%u,"
-                   "\"tail\":%u,\"branch\":%u,\"public_message\":false}\n",
-                   n->policy, n->block, tails[row], branch);
-            ids[4096] = old;
-        }
-        free(first);
-    }
 }
 
 /* Exclusive failed-only sidecars: raw vector bytes survive NaNs unchanged. */
@@ -969,41 +647,6 @@ static int official_diagnostic_preflight(unsigned block, int compact,
 }
 #endif
 
-/* Compile-time approval only. No argument or environment variable opens this gate. */
-#ifndef CONTROLLER_MODEL_ENTRY
-#define CONTROLLER_MODEL_ENTRY 0
-#endif
-
-typedef struct {
-    native_service *(*create)(unsigned, unsigned, char **);
-    void (*run)(native_service *);
-    void (*destroy)(void *);
-} owner_lifecycle;
-
-static int sequential_owners(unsigned block, char **args, owner_lifecycle ops)
-{
-    CHECK(block == 128 || block == 256);
-    endpoint_serial = 0;
-    for (unsigned policy = 0; policy < 3; policy++) {
-        native_service *n = ops.create(policy, block, args);
-        if (!n) {
-            return 3;
-        }
-        CHECK(n->policy == policy && n->block == block && n->capacity == 4352);
-        ops.run(n);
-        ops.destroy(n); /* Includes checkpoint, runtime, tokenizer before next create. */
-    }
-    return 0;
-}
-
-static void owner_cases(native_service *n)
-{
-    controller_probe_subset(n, n->policy, n->block);
-    public_cases(n); /* Joins worker before returning. */
-    adapter_branches(n);
-    direct_replays(n);
-}
-
 #ifndef CONTROLLER_STUB
 static native_service *official_owner(unsigned policy, unsigned block, char **args)
 {
@@ -1044,21 +687,6 @@ static native_service *official_owner(unsigned policy, unsigned block, char **ar
     return n;
 }
 
-/* Kept compiled even while gate is false, so constructor/case linkage is checked. */
-static int future_entry(int argc, char **argv)
-{
-    if (argc != 7 || (strcmp(argv[3], "128") && strcmp(argv[3], "256")) ||
-        (strcmp(argv[4], "mps") && strcmp(argv[4], "custom")) ||
-        (strcmp(argv[5], "resident") && strcmp(argv[5], "compact")) ||
-        !argv[1][0] || argv[1][0] == '-' || !argv[2][0] || argv[2][0] == '-' ||
-        !argv[6][0] || argv[6][0] == '-' || strlen(argv[6]) > 256) {
-        fputs("REFUSED: invalid C arguments; no model opened.\n", stderr);
-        return 2;
-    }
-    endpoint_dir = argv[6]; /* Caller supplies an exclusive output directory. */
-    return sequential_owners((unsigned)atoi(argv[3]), argv,
-        (owner_lifecycle){official_owner, owner_cases, native_destroy});
-}
 #endif
 
 #ifdef CONTROLLER_STUB
@@ -1112,122 +740,69 @@ static int test_diagnostic_admission(void)
     CHECK(diagnostic_guard_base(64, 0, &base) == -1);
     return 0;
 }
-static unsigned mock_live, mock_created, mock_phase, mock_fail;
-static native_service mock_owner;
-static native_service *mock_create(unsigned policy, unsigned block, char **args)
+/* Model-free support checks run through the actual short-stub entrypoint.
+ * These were dormant branches of the retired runner, not previous coverage. */
+static void test_support(const char *directory)
 {
-    (void)args;
-    CHECK(!mock_live && mock_phase == 0 && policy == mock_created);
-    if (mock_fail == policy + 1) {
-        return NULL;
-    }
-    mock_created++;
-    mock_live = 1;
-    mock_phase = 1;
-    memset(&mock_owner, 0, sizeof(mock_owner));
-    mock_owner.policy = policy;
-    mock_owner.block = block;
-    mock_owner.capacity = 4352;
-    return &mock_owner;
-}
-static void mock_run(native_service *n)
-{
-    CHECK(n == &mock_owner && mock_live == 1 && mock_phase == 1);
-    mock_phase = 2;
-}
-static void mock_destroy(void *n)
-{
-    CHECK(n == &mock_owner && mock_live == 1 && mock_phase == 2);
-    mock_live = mock_phase = 0;
-}
-static int test_lifecycle(void)
-{
-    for (unsigned block = 128; block <= 256; block += 128) {
-        for (mock_fail = 0; mock_fail <= 3; mock_fail++) {
-            mock_created = 0;
-            int result = sequential_owners(block, NULL,
-                (owner_lifecycle){mock_create, mock_run, mock_destroy});
-            CHECK(result == (mock_fail ? 3 : 0));
-            CHECK(mock_created == (mock_fail ? mock_fail - 1 : 3));
-            CHECK(!mock_live && !mock_phase);
-        }
-    }
-    return 0;
-}
-#endif
-
-int reviewed_unused_main(int argc, char **argv)
-{
-    (void)argv;
-#ifdef CONTROLLER_STUB
-    if (argc == 2 && !strcmp(argv[1], "--test-admission")) return test_diagnostic_admission();
-    if (argc == 2 && !strcmp(argv[1], "--test-lifecycle")) {
-        return test_lifecycle();
-    }
-    if (argc == 2 && !strcmp(argv[1], "--test-journal-key")) {
-        runtime_journal a = {0}, b;
-        a.calls = 2; a.tokens = 3;
-        a.api[0] = 'P'; a.api[1] = 'A';
-        a.size[0] = 1; a.size[1] = 2;
-        a.ids[0] = 7; a.ids[1] = 8; a.ids[2] = 9;
-        memset(&b, 0xa5, sizeof(b));
-        b.calls = a.calls; b.tokens = a.tokens;
-        memcpy(b.api, a.api, 2); memcpy(b.size, a.size, 2 * sizeof(unsigned));
-        memcpy(b.ids, a.ids, 3 * sizeof(int64_t));
-        CHECK(same_journal(&a, &b));
-        b.ids[2]++; CHECK(!same_journal(&a, &b)); b.ids[2]--;
-        b.api[1] = 'D'; CHECK(!same_journal(&a, &b)); b.api[1] = 'A';
-        b.size[0] = 2; b.size[1] = 1; CHECK(!same_journal(&a, &b));
-        b = a; b.calls--; CHECK(!same_journal(&a, &b));
-        b = a; b.tokens--; CHECK(!same_journal(&a, &b));
-        return 0;
-    }
-    if (argc == 4 && !strcmp(argv[1], "--negative-vector")) {
+    CHECK(!test_diagnostic_admission());
+    runtime_journal a = {0}, b;
+    a.calls = 2;
+    a.tokens = 3;
+    a.api[0] = 'P';
+    a.api[1] = 'A';
+    a.size[0] = 1;
+    a.size[1] = 2;
+    a.ids[0] = 7;
+    a.ids[1] = 8;
+    a.ids[2] = 9;
+    memset(&b, 0xa5, sizeof(b));
+    b.calls = a.calls;
+    b.tokens = a.tokens;
+    memcpy(b.api, a.api, 2);
+    memcpy(b.size, a.size, 2 * sizeof(unsigned));
+    memcpy(b.ids, a.ids, 3 * sizeof(int64_t));
+    CHECK(same_journal(&a, &b));
+    b.ids[2]++;
+    CHECK(!same_journal(&a, &b));
+    b.ids[2]--;
+    b.api[1] = 'D';
+    CHECK(!same_journal(&a, &b));
+    b.api[1] = 'A';
+    b.size[0] = 2;
+    b.size[1] = 1;
+    CHECK(!same_journal(&a, &b));
+    b = a;
+    b.calls--;
+    CHECK(!same_journal(&a, &b));
+    b = a;
+    b.tokens--;
+    CHECK(!same_journal(&a, &b));
+    float *expected = calloc(131072, sizeof(float));
+    float *actual = calloc(131072, sizeof(float));
+    CHECK(expected && actual);
+    /* Keep these intentional failure sidecars separate from replay failures. */
+    const char *saved_directory = endpoint_dir;
+    endpoint_dir = NULL;
+    for (unsigned kind = 0; kind < 3; kind++) {
         endpoint_record record = {0};
-        CHECK(strlen(argv[2]) < sizeof(record.path));
-        strcpy(record.path, argv[2]);
-        float *expected = calloc(131072, sizeof(float));
-        float *actual = calloc(131072, sizeof(float));
         unsigned char hashes[52][32] = {{0}};
-        CHECK(expected && actual);
-        if (!strcmp(argv[3], "nan")) actual[131071] = NAN;
-        else if (!strcmp(argv[3], "bits")) actual[131071] = -0.0f;
-        else { CHECK(!strcmp(argv[3], "kv")); hashes[51][31] = 1; }
+        CHECK(snprintf(record.path, sizeof(record.path), "%s/support-negative-%u", directory,
+                       kind) < (int)sizeof(record.path));
+        memset(actual, 0, 131072 * sizeof(float));
+        CHECK(compare_direct(&record, expected, actual, &hashes[0][0]));
+        if (kind == 0) {
+            actual[131071] = NAN;
+        } else if (kind == 1) {
+            actual[131071] = -0.0f;
+        } else {
+            hashes[51][31] = 1;
+        }
         CHECK(!compare_direct(&record, expected, actual, &hashes[0][0]));
-        free(expected); free(actual);
-        return 0;
     }
-    CHECK(argc == 4);
-    unsigned requested_block = (unsigned)strtoul(argv[3], NULL, 10);
-    CHECK(requested_block == 128 || requested_block == 256);
-    CHECK(strlen(argv[2]) <= 256);
-    endpoint_dir = argv[2];
-    for (unsigned block = requested_block; block == requested_block; block = 0) {
-        for (unsigned policy = 0; policy < 3; policy++) {
-            native_service *n = calloc(1, sizeof(*n));
-            CHECK(n);
-            n->runtime = calloc(1, sizeof(*n->runtime));
-            CHECK(n->runtime);
-            n->runtime->capacity = n->capacity = 4352;
-            n->runtime->block = n->block = block;
-            n->policy = policy;
-            char error[512];
-            CHECK(lunelette_tokenizer_open(argv[1], &n->tokenizer, error, sizeof(error)));
-            owner_cases(n);
-            native_invalidate(n);
-            lunelette_metal_destroy(n->runtime);
-            lunelette_tokenizer_close(n->tokenizer);
-            free(n);
-        }
-    }
-    return 0;
-#else
-    if (CONTROLLER_MODEL_ENTRY) {
-        @autoreleasepool {
-            return future_entry(argc, argv);
-        }
-    }
-    fputs("REFUSED: C model entry compile gate CLOSED.\n", stderr);
-    return 77;
-#endif
+    endpoint_dir = saved_directory;
+    free(expected);
+    free(actual);
+    puts("{\"type\":\"support_tests_verified\",\"admission\":true,"
+         "\"journal_key\":true,\"negative_vectors\":3}");
 }
+#endif
